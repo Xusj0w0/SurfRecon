@@ -22,3 +22,30 @@ segany-test = "internal.entrypoints.seganygs:cli_test"
 segany-predict = "internal.entrypoints.seganygs:cli_predict"
 
 gs-viewer = "internal.entrypoints.viewer:cli"
+
+
+[tool.black]
+force-exclude = '''
+(
+    ^/configs/*     |
+    ^/internal/*    |
+    ^/notebooks/*   |
+    ^/scripts/*     |
+    ^/submodules/*  |
+    ^/tests/*       |
+    ^/third_party/* |
+    ^/utils/*
+)
+'''
+
+[tool.isort]
+skip_glob = [
+    "configs/*", 
+    "internal/*", 
+    "notebooks/*", 
+    "scripts/*", 
+    "submodules/*", 
+    "tests/*", 
+    "third_party/*", 
+    "utils/*"
+]

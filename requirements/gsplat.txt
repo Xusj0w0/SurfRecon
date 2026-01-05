@@ -1,1 +1,0 @@
-git+https://github.com/yzslab/gsplat.git@c27a44d4ad72ece2c32f99702083ac3d911d4ced

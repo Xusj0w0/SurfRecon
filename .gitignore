@@ -6,3 +6,6 @@ edited
 clusters
 segments
 **/__pycache__
+
+.vscode
+data
