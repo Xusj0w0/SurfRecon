@@ -1,2 +1,0 @@
-_nvdiffrast_c
-nvdiffrast
