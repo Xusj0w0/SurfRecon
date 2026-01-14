@@ -1,0 +1,24 @@
+max_steps: 60_000
+save_iterations: [30_000, 60_000]
+output: outputs/mc_aerial
+name: coarse
+
+data:
+  path: data/MatrixCity/aerial/train
+  parser:
+    class_path: internal.dataparsers.Colmap
+    init_args:
+      split_mode: reconstruction
+      eval_image_select_mode: step
+      eval_step: 16
+  train_max_num_images_to_cache: 256
+  num_workers: 6
+  async_caching: true
+
+model:
+  density:
+    class_path: internal.density_controllers.vanilla_density_controller.VanillaDensityController
+    init_args:
+      densification_interval: 200
+      opacity_reset_interval: 60_000
+      densify_until_iter: 30_000

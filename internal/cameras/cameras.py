@@ -146,7 +146,7 @@ class Cameras:
 
     def _calculate_w2c(self):
         # build world-to-camera transform matrix
-        self.world_to_camera = torch.zeros((self.R.shape[0], 4, 4))
+        self.world_to_camera = self.R.new_zeros(self.R.shape[0], 4, 4)
         self.world_to_camera[:, :3, :3] = self.R
         self.world_to_camera[:, :3, 3] = self.T
         self.world_to_camera[:, 3, 3] = 1.
@@ -172,7 +172,7 @@ class Cameras:
         right = tanHalfFovX * znear
         left = -right
 
-        P = torch.zeros(self.fov_y.shape[0], 4, 4)
+        P = self.R.new_zeros(self.R.shape[0], 4, 4)
 
         z_sign = 1.0
 

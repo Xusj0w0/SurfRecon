@@ -15,6 +15,7 @@ include_directories(${CONDA_PREFIX}/include)
 find_package(Torch REQUIRED)
 find_package(CGAL REQUIRED)
 # find_package(pybind11 REQUIRED)
+find_package(CUDAToolkit REQUIRED)
 
 include(FetchContent)
 FetchContent_Declare(
@@ -61,6 +62,9 @@ pybind11_add_module(tetranerf_cpp_extension
 
 target_link_libraries(tetranerf_cpp_extension PRIVATE ${CUDA_LIBRARIES} ${TORCH_LIBRARIES})
 target_link_libraries(tetranerf_cpp_extension PRIVATE CGAL::CGAL)
+target_include_directories(tetranerf_cpp_extension PRIVATE
+    ${CUDAToolkit_INCLUDE_DIRS}
+)
 target_compile_features(tetranerf_cpp_extension PRIVATE cxx_std_17)
 set_target_properties(tetranerf_cpp_extension
     PROPERTIES
