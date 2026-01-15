@@ -62,7 +62,7 @@ class SelectiveAdam(OptimizerConfig):
 @dataclass
 class SparseGaussianAdam(OptimizerConfig):
     def instantiate(self, params, lr: float, *args, **kwargs) -> Any:
-        from diff_accel_gaussian_rasterization import SparseGaussianAdam
+        from diff_gaussian_rasterization import SparseGaussianAdam
         from torch.optim.optimizer import _use_grad_for_differentiable
 
         class Adapter(SparseGaussianAdam):

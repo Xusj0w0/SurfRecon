@@ -3,22 +3,21 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Tuple, Union
 
 import torch
-from diff_gaussian_rasterization_ms import (GaussianRasterizationSettings,
-                                            GaussianRasterizer)
+# from diff_gaussian_rasterization_ms import (GaussianRasterizationSettings,
+#                                             GaussianRasterizer)
+from diff_gaussian_rasterization import (GaussianRasterizationSettings,
+                                         GaussianRasterizer)
 
 from internal.cameras import Camera, Cameras
 from internal.models.gaussian import GaussianModel
 from internal.utils.sh_utils import eval_sh
 
 
-def render_simp(
+def rasterize_importance(
     viewpoint_camera: Camera,
     pc: GaussianModel,
-    bg_color: Optional[torch.Tensor] = None,
     scaling_modifier: float = 1.0,
     compute_cov3D_python: bool = False,
-    convert_SHs_python: bool = False,
-    override_color=None,
     override_opacity: Optional[torch.Tensor] = None,
     override_scale: Optional[torch.Tensor] = None,
 ):
@@ -34,11 +33,11 @@ def render_simp(
         image_width=int(viewpoint_camera.width),
         tanfovx=tanfovx,
         tanfovy=tanfovy,
-        bg=bg_color,
+        bg=None,
         scale_modifier=scaling_modifier,
         viewmatrix=viewpoint_camera.world_to_camera,
         projmatrix=viewpoint_camera.full_projection,
-        sh_degree=pc.active_sh_degree,
+        sh_degree=None,
         campos=viewpoint_camera.camera_center,
         prefiltered=False,
         debug=False,
@@ -47,7 +46,7 @@ def render_simp(
     rasterizer = GaussianRasterizer(raster_settings=raster_settings)
 
     _opacities = override_opacity if override_opacity is not None else pc.get_opacity
-    _scales = override_scale if override_scale is not None else pc.get_scale
+    _scales = override_scale if override_scale is not None else pc.get_scaling
 
     means3D = pc.get_xyz
     means2D = screenspace_points
@@ -64,31 +63,10 @@ def render_simp(
         rotations = pc.get_rotation
         scales = _scales
 
-    # If precomputed colors are provided, use them. Otherwise, if it is desired to precompute colors
-    # from SHs in Python, do it. If not, then SH -> RGB conversion will be done by rasterizer.
-    dc, shs = None, None
-    colors_precomp = None
-    if override_color is None:
-        if convert_SHs_python is True:
-            shs_view = pc.get_features.transpose(1, 2).view(-1, 3, (pc.max_sh_degree + 1) ** 2)
-            dir_pp = pc.get_xyz - viewpoint_camera.camera_center.repeat(pc.get_features.shape[0], 1)
-            dir_pp_normalized = dir_pp / dir_pp.norm(dim=1, keepdim=True)
-            sh2rgb = eval_sh(pc.active_sh_degree, shs_view, dir_pp_normalized)
-            colors_precomp = torch.clamp_min(sh2rgb + 0.5, 0.0)
-        else:
-            shs = pc.get_features
-            dc, shs = shs[:, :1, :], shs[:, 1:, :]
-    else:
-        colors_precomp = override_color
-
     # Rasterize visible Gaussians to image, obtain their radii (on screen).
-    rendered_image, radii, accum_weights_ptr, accum_weights_count, accum_max_count = rasterizer.render_simp(
+    num_rendered, radii, accum_weights, num_hit_pixels, num_max_pixels = rasterizer.rasterize_importance(
         means3D=means3D,
         means2D=means2D,
-        dc=dc,
-        shs=shs,
-        culling=torch.zeros(means3D.shape[0], dtype=torch.bool, device=means3D.device),
-        colors_precomp=colors_precomp,
         opacities=opacity,
         scales=scales,
         rotations=rotations,
@@ -96,40 +74,31 @@ def render_simp(
     )
 
     return {
-        "render": rendered_image,
         "viewspace_points": screenspace_points,
         "visibility_filter": (radii > 0).nonzero(),
         "radii": radii,
-        "accum_weights": accum_weights_ptr,
-        "area_proj": accum_weights_count,
-        "area_max": accum_max_count,
+        "accum_weights": accum_weights,
+        "num_hit_pixels": num_hit_pixels,
+        "num_max_pixels": num_max_pixels,
     }
 
 
 class ImportanceMixin:
-    def render_simp(
+    def rasterize_importance(
         self,
         viewpoint_camera: Camera,
         pc: GaussianModel,
-        bg_color: Optional[torch.Tensor] = None,
         scaling_modifier: float = 1.0,
-        override_color=None,
         *args,
         **kwargs,
     ):
-        if bg_color is None:
-            bg_color = torch.tensor(self.config.default_background, device=pc.get_xyz.device)
-
         _opacities, _scales = self._get_opacities_and_scales(pc)
 
-        return render_simp(
+        return rasterize_importance(
             viewpoint_camera=viewpoint_camera,
             pc=pc,
-            bg_color=bg_color,
             scaling_modifier=scaling_modifier,
             compute_cov3D_python=self.compute_cov3D_python,
-            convert_SHs_python=self.convert_SHs_python,
-            override_color=override_color,
             override_opacity=_opacities,
             override_scale=_scales,
         )

@@ -34,12 +34,14 @@ class MeshRegularizationSchedule:
 
 @dataclass
 class MeshRegularizedMetrics(VanillaMetrics):
+    fused_ssim: bool = field(default=True)
+
     dn_start_iter: int = 7_000
     "Depth-Normal consistency regularization start iteration"
 
     lambda_dn: float = 0.05
 
-    median_fusing_ratio: float = 0.6
+    median_fusing_ratio: float = 1.0
     """
     If both median_depth and expected_depth are rendered,
     normal errors from median_depth are scaled by alpha,
@@ -51,15 +53,15 @@ class MeshRegularizedMetrics(VanillaMetrics):
     use_occupancy_label_loss: bool = True
     "Whether to compute bce loss between occupancy and its label (evaluated by mesh)"
 
-    lambda_mesh_depth: float = 0.01
+    lambda_mesh_depth: float = 0.05
     "Weighting coefficient of loss between gaussian depth and mesh depth"
 
-    lambda_mesh_normal: float = 0.01
+    lambda_mesh_normal: float = 0.05
     "Weighting coefficient of loss between gaussian normal and mesh normal"
 
-    lambda_occupancy_label: float = 0.001
+    lambda_occupancy_label: float = 0.005
 
-    lambda_center_isosurface: float = 0.001
+    lambda_center_isosurface: float = 0.005
 
     def instantiate(self, *args, **kwargs):
         return MeshRegularizedMetricsImpl(self)
@@ -92,14 +94,18 @@ class MeshRegularizedMetricsImpl(VanillaMetricsImpl):
             normal = outputs.get("normal", None)  # (3, H, W) in camera coordinate
             assert all(m is not None for m in [depth_median, depth_expected, normal])
 
-            normal_from_median_depth = normal_from_median_depth or self.depth_to_normal(depth_median, camera)
-            normal_from_expected_depth = normal_from_expected_depth or self.depth_to_normal(depth_expected, camera)
+            if normal_from_median_depth is None:
+                normal_from_median_depth = self.depth_to_normal(depth_median, camera)
+            if normal_from_expected_depth is None:
+                normal_from_expected_depth = self.depth_to_normal(depth_expected, camera)
             error_map_median = 1.0 - (normal * normal_from_median_depth).sum(0)
             error_map_expected = 1.0 - (normal * normal_from_expected_depth).sum(0)
-            loss_dn = (
-                self.config.median_fusing_ratio * error_map_median.mean()
-                + (1.0 - self.config.median_fusing_ratio) * error_map_expected.mean()
-            )
+            ratio = 0.6
+            # loss_dn = (
+            #     self.config.median_fusing_ratio * error_map_median.mean()
+            #     + (1.0 - self.config.median_fusing_ratio) * error_map_expected.mean()
+            # )
+            loss_dn = (1.0 - ratio) * error_map_median.mean() + ratio * error_map_expected.mean()
 
         metrics["loss_dn"] = loss_dn
         pbar["loss_dn"] = False
@@ -172,8 +178,10 @@ class MeshRegularizedMetricsImpl(VanillaMetricsImpl):
                 assert occupancy_logits is not None and occupancy_labels is not None
 
                 occupancy_logits, occupancy_labels = occupancy_logits.reshape(-1), occupancy_labels.reshape(-1)
-                loss_occupancy_label = F.binary_cross_entropy_with_logits(occupancy_logits, occupancy_labels, reduction="none")
-                loss_occupancy_label = (loss_occupancy_label * (occupancy_labels > 0.5)).mean()
+                # loss_occupancy_label = F.binary_cross_entropy_with_logits(occupancy_logits, occupancy_labels, reduction="none")
+                # loss_occupancy_label = (loss_occupancy_label * (occupancy_labels > 0.5)).mean()
+                loss_occupancy_label = F.binary_cross_entropy_with_logits(occupancy_logits, occupancy_labels)
+                loss_occupancy_label = (loss_occupancy_label * (occupancy_labels > 0.5).float()).mean()
 
             metrics["loss_occupancy_label"] = loss_occupancy_label
             pbar["loss_occupancy_label"] = False

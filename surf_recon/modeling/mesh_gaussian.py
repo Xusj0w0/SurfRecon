@@ -16,6 +16,8 @@ from internal.models.vanilla_gaussian import \
     OptimizationConfig as VanillaOptimizationConfig
 from internal.models.vanilla_gaussian import (VanillaGaussian,
                                               VanillaGaussianModel)
+from internal.optimizers import Adam, OptimizerConfig, SparseGaussianAdam
+from internal.schedulers import ExponentialDecayScheduler, Scheduler
 from internal.utils.general_utils import build_rotation, inverse_sigmoid
 
 from .renderers.mesh import MeshRendererMixin
@@ -33,7 +35,11 @@ except ImportError:
 
 @dataclass
 class OptimizationConfig(VanillaOptimizationConfig):
+    opacities_lr: float = 0.025
+
     occupancy_lr: float = 0.05
+
+    optimizer: OptimizerConfig = field(default_factory=lambda: {"class_path": "SparseGaussianAdam"})
 
 
 @dataclass
@@ -246,13 +252,12 @@ class MeshMixin:
     def training_setup(self, module):
         optimizers, schedulers = super().training_setup(module)
 
-        optimizer_factory = self.config.optimization.optimizer
         occupancy_params = {
             "params": [self.tetrahedra["occupancy_shift"]],
             "lr": self.config.optimization.occupancy_lr,
             "name": "occupancy",
         }
-        optimizer = optimizer_factory.instantiate([occupancy_params], lr=0.0, eps=1e-15)
+        optimizer = Adam().instantiate([occupancy_params], lr=0.0, eps=1e-15)
         optimizers.append(optimizer)
         return optimizers, schedulers
 
@@ -591,15 +596,15 @@ class MeshGaussianUtils:
 
         for idx in tqdm(range(len(train_cameras)), desc="Sampling surface Gaussians", leave=True):
             viewpoint = train_cameras[idx].to_device(device)
-            outputs = renderer.render_simp(viewpoint, gaussian_model)
+            outputs = renderer.rasterize_importance(viewpoint, gaussian_model)
             visibility_filter = outputs["visibility_filter"]
             accum_weights = outputs["accum_weights"]
-            area_proj = outputs["area_proj"]
-            area_max = outputs["area_max"]
+            num_hit_pixels = outputs["num_hit_pixels"]
+            num_max_pixels = outputs["num_max_pixels"]
 
-            accum_area_max += area_max
-            mask = area_max != 0
-            _score = imp_score + accum_weights / area_proj  # gaussian's average blending weight per pixel
+            accum_area_max += num_max_pixels
+            mask = num_max_pixels != 0
+            _score = imp_score + accum_weights / num_hit_pixels  # gaussian's average blending weight per pixel
             imp_score[mask] = _score[mask]
 
             non_prune_mask = cls.init_cdf_mask(accum_weights, threshold=0.99)

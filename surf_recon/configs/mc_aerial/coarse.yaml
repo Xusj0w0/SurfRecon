@@ -16,9 +16,17 @@ data:
   async_caching: true
 
 model:
+  gaussian:
+    class_path: internal.models.vanilla_gaussian.VanillaGaussian
+    init_args:
+      optimization:
+        means_lr_init: 6.4e-5
+        means_lr_scheduler:
+          lr_final: 6.4e-7
+          max_steps: 60_000
   density:
     class_path: internal.density_controllers.vanilla_density_controller.VanillaDensityController
     init_args:
       densification_interval: 200
-      opacity_reset_interval: 60_000
+      opacity_reset_interval: 3000
       densify_until_iter: 30_000

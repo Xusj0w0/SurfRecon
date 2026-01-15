@@ -9,19 +9,25 @@ import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+import yaml
 from matplotlib.pyplot import cm
 from tqdm.auto import tqdm
 
 from internal.cameras import Cameras
 from internal.configs.instantiate_config import InstantiatableConfig
-from internal.dataparsers import DataParserOutputs, ImageSet
 from internal.dataparsers.colmap_dataparser import Colmap
+from internal.dataparsers.dataparser import (DataParserOutputs, ImageSet,
+                                             PointCloud)
 from internal.models.vanilla_gaussian import VanillaGaussianModel
 from internal.renderers.vanilla_renderer import VanillaRenderer
 from internal.utils.gaussian_model_loader import GaussianModelLoader
 from internal.utils.gaussian_utils import GaussianPlyUtils
-from internal.utils.sh_utils import SH2RGB
-from surf_recon.modeling.renderers.importance import render_simp
+from internal.utils.sh_utils import SH2RGB, eval_sh
+from surf_recon.modeling.renderers.importance import rasterize_importance
+
+
+def torch2numpy(tensor: torch.Tensor) -> np.ndarray:
+    return tensor.detach().cpu().numpy()
 
 
 @dataclass
@@ -57,7 +63,7 @@ class PartitionCoordinates:
         return self.id.shape[0]
 
     def __getitem__(self, item):
-        return self.id[item], self.xy[item]
+        return self.id[item], self.xy[item], self.size[item]
 
     def __iter__(self):
         for idx in range(len(self)):
@@ -71,12 +77,33 @@ class PartitionCoordinates:
             max=xy_max,
         )
 
+    def extend_to_bbox(self, bbox: MinMaxBoundingBox):
+        x_dim, y_dim = self.id[:, 0].max().item() + 1, self.id[:, 1].max().item() + 1
+
+        for cell_idx in range(len(self)):
+            indices, xymin, size = self[cell_idx]
+            _xymin = xymin.clone()
+            _xymax = _xymin + size
+            if indices[0] == 0:
+                _xymin[0] = bbox.min[0]
+            if indices[0] == x_dim - 1:
+                _xymax[0] = bbox.max[0]
+            if indices[1] == 0:
+                _xymin[1] = bbox.min[1]
+            if indices[1] == y_dim - 1:
+                _xymax[1] = bbox.max[1]
+
+            self.xy[cell_idx][0] = _xymin[0]
+            self.xy[cell_idx][1] = _xymin[1]
+            self.size[cell_idx][0] = _xymax[0] - _xymin[0]
+            self.size[cell_idx][1] = _xymax[1] - _xymin[1]
+
 
 @dataclass
 class SceneConfig(InstantiatableConfig):
     dataset_path: str = ""
 
-    ckpt_path: str = ""
+    coarse_model_path: str = ""
 
     transforms: List[float] = field(default_factory=lambda: [1.0] + [0.0] * 6)
     "Scene transformation, in [qw, qx, qy, qz, tx, ty, tz] format"
@@ -100,10 +127,10 @@ class SceneConfig(InstantiatableConfig):
     bbox_enlarge_by_gaussian_pos: float = 0.1
     "Enlarge block bbox for gaussian position based assignment"
 
-    gaussian_score_prune_ratio: float = 0.05
+    gaussian_score_prune_ratio: float = 0.03
 
     def __post_init__(self):
-        assert osp.exists(self.dataset_path) and osp.exists(self.ckpt_path), "Dataset path and checkpoint path must exist"
+        assert osp.exists(self.dataset_path) and osp.exists(self.coarse_model_path), "Dataset path and checkpoint path must exist"
         assert len(self.partition_dim) == 2, "Partition dimension must be a list of two integers"
         assert len(self.transforms) == 7, "Transforms must be a list of seven floats [qw, qx, qy, qz, tx, ty, tz]"
 
@@ -112,23 +139,25 @@ class SceneConfig(InstantiatableConfig):
 
 
 class PartitionableScene:
-    def __init__(self, config: SceneConfig, device: Optional[torch.device] = None, **kwargs):
+    def __init__(self, config: SceneConfig, gpu_idx: Optional[int] = None, **kwargs):
         self.config = config
-        if device is None:
-            self.device = torch.device("cpu")
+        if gpu_idx is None or gpu_idx < 0:
+            raise ValueError("GPU index must be specified and non-negative")
         else:
-            self.device = device
+            self.device = torch.device(f"cuda:{gpu_idx}")
 
     def run(self, output_path: str):
         os.makedirs(output_path, exist_ok=True)
         # Save config
-        with open(osp.join(output_path, "config.json"), "w") as f:
-            json.dump(asdict(self.config), f, indent=4, separators=(", ", ": "))
+        with open(osp.join(output_path, "config.yaml"), "w") as f:
+            yaml.safe_dump(asdict(self.config), f, indent=4, sort_keys=False)
         # Try loading intermediates
         intermediates = self.load_intermediates(output_path)
 
         # Load scene
-        gaussian_model, renderer, ckpt, image_set = self.load_scene()
+        gaussian_model, renderer, ckpt, dataparser_outputs = self.load_scene()
+        image_set = dataparser_outputs.train_set
+        pcd = dataparser_outputs.point_cloud
 
         # Apply transformation to camera positions
         campos = image_set.cameras.camera_center.to(self.device)
@@ -140,7 +169,26 @@ class PartitionableScene:
 
         # Compute scene bounding box and division
         scene_bbox = self.get_bounding_box_by_campos(campos_transformed)
-        partition_coords = self.balanced_camera_based_division(campos_transformed, scene_bbox)
+        campos_bbox = MinMaxBoundingBox(
+            min=torch.min(campos_transformed[..., :2], dim=0).values,
+            max=torch.max(campos_transformed[..., :2], dim=0).values,
+        )
+        partition_coords = self.balanced_camera_based_division(campos_transformed, campos_bbox)
+
+        fig, ax = plt.subplots()
+        self.set_plot_ax_limit(ax, scene_bbox)
+        # Plot scene and division
+        _, scene_bbox_obj = self.plot_scene(ax, pcd, scene_bbox)
+        fig.savefig(osp.join(self.get_figures_dir(output_path), "scene.png"), dpi=300)
+        scene_bbox_obj.remove()
+        cell_bbox_objs = self.plot_scene_division(ax, partition_coords)
+        fig.savefig(osp.join(self.get_figures_dir(output_path), "scene_division.png"), dpi=300)
+        for obj in cell_bbox_objs:
+            obj.remove()
+
+        # Save intermediate results
+        intermediates_path = osp.join(self.get_intermediates_path(output_path), "scene_division.pt")
+        torch.save({"scene_bbox": asdict(scene_bbox), "partition_coords": asdict(partition_coords)}, intermediates_path)
 
         # Camera position based assignment
         campos_assign = self.is_in_bboxes(
@@ -152,11 +200,23 @@ class PartitionableScene:
             cam_vis = self.compute_camera_visibility(
                 partition_coords=partition_coords, cameras=image_set.cameras, gaussian_model=gaussian_model
             )
-        visibility_assign = cam_vis > self.config.camera_visibility_threshold  # [N_partitions, N_cameras]
-        camera_assign = torch.logical_or(campos_assign, visibility_assign)
+            # Save intermediate results
+            intermediates_path = osp.join(self.get_intermediates_path(output_path), "camera_visibility.pt")
+            torch.save(cam_vis, intermediates_path)
+        camvis_assign = cam_vis > self.config.camera_visibility_threshold  # [N_partitions, N_cameras]
+        camera_assign = torch.logical_or(campos_assign, camvis_assign)
+        print("Num cameras assigned to each cell: {}".format(camera_assign.sum(dim=1).tolist()))
+
+        # Plot camera assignment
+        for cell_idx in range(len(partition_coords)):
+            cell_objs = self.plot_cell(ax, cell_idx, partition_coords, campos_transformed, camera_assign)
+            fig.savefig(osp.join(self.get_figures_dir(output_path), "{}.png".format(self.get_cell_name(cell_idx))), dpi=300)
+            for obj in cell_objs:
+                obj.remove()
+        plt.close(fig)
 
         # Gaussian position based assignment
-        gaussian_pos_assign = self.is_in_bboxes(
+        gs_pos_assign = self.is_in_bboxes(
             partition_coords.get_bounding_boxes(enlarge=self.config.bbox_enlarge_by_gaussian_pos), gs_means_transformed
         )
         # Gaussian score based assignment
@@ -168,45 +228,49 @@ class PartitionableScene:
                 cameras=image_set.cameras,
                 gaussian_model=gaussian_model,
             )
-        gs_score_assign = gaussian_pos_assign.new_zeros(gaussian_pos_assign.shape)
-        for cell_id in range(len(partition_coords)):
-            gs_score_assign[cell_id] = self.init_cdf_mask(gs_score[cell_id], 1.0 - self.config.gaussian_score_prune_ratio)
-        gaussian_assign = torch.logical_or(gaussian_pos_assign, gs_score_assign)
+            # Save intermediate results
+            intermediates_path = osp.join(self.get_intermediates_path(output_path), "gaussian_score.pt")
+            torch.save(gs_score, intermediates_path)
+        gs_score_assign = gs_pos_assign.new_zeros(gs_pos_assign.shape)
+        for cell_idx in range(len(partition_coords)):
+            gs_score_assign[cell_idx] = self.init_cdf_mask(gs_score[cell_idx], 1.0 - self.config.gaussian_score_prune_ratio)
+        gaussian_assign = torch.logical_or(gs_pos_assign, gs_score_assign)
+        gs_ratios = (gaussian_assign.sum(dim=1) / gaussian_assign.shape[1]).tolist()
+        print("Ratio of gaussians assigned to each cell: {}".format("[" + ", ".join(f"{r:.2f}" for r in gs_ratios) + "]"))
 
-        # Save intermediate results
-        if not "camera_visibility" in intermediates:
-            self.save_intermediates(output_path, scene_bbox, partition_coords, cam_vis, gs_score)
-
-        # Save plots
-        self.save_plots(
-            output_path=output_path,
-            scene_bbox=scene_bbox,
-            partition_coords=partition_coords,
-            cameras=image_set.cameras,
-            gaussian_model=gaussian_model,
-            camera_assign=camera_assign,
-            gaussian_assign=gaussian_assign,
-        )
-
-        # save partitions
+        # Save partitions
         self.save_partitions(
             output_path=output_path,
+            scene_bbox=scene_bbox,
             partition_coords=partition_coords,
             gaussian_model=gaussian_model,
             image_set=image_set,
             camera_assign=camera_assign,
             gaussian_assign=gaussian_assign,
         )
+        # Save pt
+        partition_info = {
+            "scene_bbox": asdict(scene_bbox),
+            "partition_coords": asdict(partition_coords),
+            "campos_assign": campos_assign,
+            "camvis_assign": camvis_assign,
+            "camera_visibility": cam_vis,
+            "gs_pos_assign": gs_pos_assign,
+            "gs_score": gs_score,
+            "gs_score_assign": gs_score_assign,
+        }
+        torch.save(partition_info, osp.join(output_path, "partition_info.pt"))
 
-    def load_scene(self) -> Tuple[VanillaGaussianModel, VanillaRenderer, Dict[str, Any], ImageSet]:
+    def load_scene(self) -> Tuple[VanillaGaussianModel, VanillaRenderer, Dict[str, Any], DataParserOutputs]:
+        ckpt_path = GaussianModelLoader.search_load_file(self.config.coarse_model_path)
         gaussian_model, renderer, ckpt = GaussianModelLoader.initialize_model_and_renderer_from_checkpoint_file(
-            self.config.ckpt_path, device=self.device, pre_activate=False
+            ckpt_path, device=self.device, eval_mode=False, pre_activate=False
         )
         dataparser: Colmap = ckpt["datamodule_hyper_parameters"]["parser"]
-        dataparser.points_from = "random"
+        dataparser.points_from = "sfm"
         dataparser.split_mode = "reconstruction"
         dataparser_outputs = dataparser.instantiate(path=self.config.dataset_path, output_path=os.getcwd(), global_rank=0).get_outputs()
-        return gaussian_model, renderer, ckpt, dataparser_outputs.train_set
+        return gaussian_model, renderer, ckpt, dataparser_outputs
 
     def get_bounding_box_by_points(self, points: torch.Tensor):
         xyz_min = torch.quantile(points, self.config.scene_bbox_outlier_by_pts, dim=0)
@@ -231,7 +295,70 @@ class PartitionableScene:
         return MinMaxBoundingBox(min=xy_min, max=xy_max)
 
     def balanced_camera_based_division(self, campos: torch.Tensor, scene_bbox: MinMaxBoundingBox):
-        """ """
+        num_cams = len(campos)
+        x_dim, y_dim = self.config.partition_dim
+        # Example 3x4 partition:
+        # 3 7 11      (0,3) (1,3) (2,3)
+        # 2 6 10      (0,2) (1,2) (2,2)
+        # 1 5 9       (0,1) (1,1) (2,1)
+        # 0 4 8       (0,0) (1,0) (2,0)
+
+        # Divide cameras along x-axis
+        num_cameras_per_column = math.ceil(num_cams / x_dim)
+        _, x_sort_indices = torch.sort(campos[:, 0], dim=0)
+        x_splits = [0.0 for _ in range(x_dim - 1)]
+        y_splits = [[0.0 for _ in range(y_dim - 1)] for _ in range(x_dim)]
+        for i, x_st in enumerate(range(0, num_cams, num_cameras_per_column)):
+            x_ed = min(x_st + num_cameras_per_column, num_cams)
+            cam_ids_in_col = x_sort_indices[x_st:x_ed]
+            campos_in_col = campos[cam_ids_in_col]
+
+            # Determine x split
+            if i != 0:
+                x_splits[i - 1] = 0.5 * (campos_in_col[:, 0].min() + prev_col_max_x)
+            prev_col_max_x = campos_in_col[:, 0].max()
+
+            # Divide cameras along y-axis
+            _, y_sort_indices = torch.sort(campos_in_col[:, 1], dim=0)
+            num_cams_in_col = len(campos_in_col)
+            num_cams_per_cell = math.ceil(num_cams_in_col / y_dim)
+            for j, y_st in enumerate(range(0, num_cams_in_col, num_cams_per_cell)):
+                y_ed = min(y_st + num_cams_per_cell, num_cams_in_col)
+                cam_ids_in_cell = cam_ids_in_col[y_sort_indices[y_st:y_ed]]
+                campos_in_cell = campos[cam_ids_in_cell]
+
+                if j != 0:
+                    y_splits[i][j - 1] = 0.5 * (campos_in_cell[:, 1].min() + prev_cell_max_y)
+                prev_cell_max_y = campos_in_cell[:, 1].max()
+
+        # Build partition coords
+        id_tensor, xy_tensor, size_tensor = (
+            torch.empty((0, 2), device=self.device, dtype=torch.long),
+            torch.empty((0, 2), device=self.device, dtype=torch.float),
+            torch.empty((0, 2), device=self.device, dtype=torch.float),
+        )
+        for i in range(x_dim):
+            for j in range(y_dim):
+                if i == 0:
+                    x_min, x_max = scene_bbox.min[0], x_splits[0]
+                elif i == x_dim - 1:
+                    x_min, x_max = x_splits[i - 1], scene_bbox.max[0]
+                else:
+                    x_min, x_max = x_splits[i - 1], x_splits[i]
+                if j == 0:
+                    y_min, y_max = scene_bbox.min[1], y_splits[i][0]
+                elif j == y_dim - 1:
+                    y_min, y_max = y_splits[i][j - 1], scene_bbox.max[1]
+                else:
+                    y_min, y_max = y_splits[i][j - 1], y_splits[i][j]
+
+                id_tensor = torch.cat([id_tensor, torch.tensor([[i, j]]).to(id_tensor)], dim=0)
+                xy_tensor = torch.cat([xy_tensor, torch.tensor([[x_min, y_min]]).to(xy_tensor)], dim=0)
+                size_tensor = torch.cat([size_tensor, torch.tensor([[x_max - x_min, y_max - y_min]]).to(size_tensor)], dim=0)
+
+        return PartitionCoordinates(id=id_tensor, xy=xy_tensor, size=size_tensor)
+
+    def balanced_camera_based_division_prev(self, campos: torch.Tensor, scene_bbox: MinMaxBoundingBox):
         num_cams = len(campos)
         x_dim, y_dim = self.config.partition_dim
         cells = [None for _ in range(x_dim * y_dim)]
@@ -278,8 +405,8 @@ class PartitionableScene:
         # Extend along y-axis
         for i in range(x_dim):
             for j in range(y_dim - 1):
-                lower_cell = cells[idx2ij(i, j)]
-                upper_cell = cells[idx2ij(i, j + 1)]
+                lower_cell = cells[ij2idx(i, j)]
+                upper_cell = cells[ij2idx(i, j + 1)]
                 y_mid = 0.5 * (lower_cell["bbox"].max[1] + upper_cell["bbox"].min[1])
                 lower_cell["bbox"].max[1] = y_mid
                 upper_cell["bbox"].min[1] = y_mid
@@ -291,8 +418,8 @@ class PartitionableScene:
         # Extend along x-axis
         for j in range(y_dim):
             for i in range(x_dim - 1):
-                left_cell = cells[idx2ij(i, j)]
-                right_cell = cells[idx2ij(i + 1, j)]
+                left_cell = cells[ij2idx(i, j)]
+                right_cell = cells[ij2idx(i + 1, j)]
                 x_mid = 0.5 * (left_cell["bbox"].max[0] + right_cell["bbox"].min[0])
                 left_cell["bbox"].max[0] = x_mid
                 right_cell["bbox"].min[0] = x_mid
@@ -317,6 +444,7 @@ class PartitionableScene:
 
         return PartitionCoordinates(id=id_tensor, xy=xy_tensor, size=size_tensor)
 
+    @torch.no_grad()
     def compute_camera_visibility(self, partition_coords: PartitionCoordinates, cameras: Cameras, gaussian_model: VanillaGaussianModel):
         cam_vis = torch.zeros((len(partition_coords), len(cameras)), device=self.device, dtype=torch.float32)
 
@@ -327,12 +455,7 @@ class PartitionableScene:
 
         for cam_idx, camera in enumerate(tqdm(cameras, desc="Computing camera visibility")):
             camera = camera.to_device(self.device)
-            with torch.no_grad():
-                outputs = render_simp(
-                    viewpoint_camera=camera,
-                    pc=gaussian_model,
-                    bg_color=torch.tensor([0.0, 0.0, 0.0], device=self.device),
-                )
+            outputs = rasterize_importance(viewpoint_camera=camera, pc=gaussian_model)
             accum_weights = outputs["accum_weights"]  # [N_gaussians]
             total_weights = accum_weights.sum()
             for cell_id in range(len(is_gaussian_in_partition)):
@@ -344,6 +467,7 @@ class PartitionableScene:
 
         return cam_vis
 
+    @torch.no_grad()
     def compute_gaussian_score(
         self, partition_coords: PartitionCoordinates, camera_assign: torch.Tensor, cameras: Cameras, gaussian_model: VanillaGaussianModel
     ):
@@ -352,81 +476,60 @@ class PartitionableScene:
 
         for cell_id in range(len(partition_coords)):
             valid_cam_ids = camera_assign[cell_id].nonzero().squeeze().tolist()
-            for cam_id in enumerate(tqdm(valid_cam_ids, desc="Computing gaussian score at partition #{}".format(cell_id))):
+            for cam_id in tqdm(valid_cam_ids, desc="Computing gaussian score at partition #{}".format(cell_id)):
                 camera = cameras[cam_id].to_device(self.device)
-                with torch.no_grad():
-                    outputs = render_simp(
-                        viewpoint_camera=camera,
-                        pc=gaussian_model,
-                        bg_color=torch.tensor([0.0, 0.0, 0.0], device=self.device),
-                    )
+                outputs = rasterize_importance(viewpoint_camera=camera, pc=gaussian_model)
                 accum_weights = outputs["accum_weights"]  # [N_gaussians]
-                area_proj = outputs["area_proj"]  # [N_gaussians]
-                score = accum_weights / area_proj.float().clamp_min(1e-6)
+                num_hit_pixels = outputs["num_hit_pixels"]  # [N_gaussians]
+                score = accum_weights / num_hit_pixels.float().clamp_min(1e-6)
                 gaussian_score[cell_id] += score
         gaussian_score = gaussian_score / camera_assign.sum(dim=1, keepdim=True)
         return gaussian_score
 
-    def save_intermediates(
-        self,
-        output_path: str,
-        scene_bbox: MinMaxBoundingBox,
-        partition_coords: PartitionCoordinates,
-        camera_visibility: torch.Tensor,
-        gaussian_score: torch.Tensor,
-    ):
-        intermediates_path = self.get_intermediates_path(output_path)
-        transforms = camera_visibility.new_zeros((3, 4), dtype=torch.float32)
-        transforms[:3, :3].copy_(self.rotation)
-        transforms[:3, 3].copy_(self.translation)
-        torch.save(
-            {
-                "transforms": transforms,
-                "scene_bbox": asdict(scene_bbox),
-                "partition_coords": asdict(partition_coords),
-                "camera_visibility": camera_visibility,
-                "gaussian_score": gaussian_score,
-            },
-            intermediates_path,
-        )
-
     def load_intermediates(self, output_path: str) -> Dict[str, Any]:
-        try:
-            intermediates_path = self.get_intermediates_path(output_path)
-            data = torch.load(intermediates_path, map_location=self.device)
-            return {
-                "scene_bbox": MinMaxBoundingBox(**data["scene_bbox"]),
-                "partition_coords": PartitionCoordinates(**data["partition_coords"]),
-                "camera_visibility": data["camera_visibility"],
-                "gaussian_score": data["gaussian_score"],
-            }
-        except:
-            return {}
+        intermediates_path = self.get_intermediates_path(output_path)
+        intermediates = {}
+        if osp.exists(osp.join(intermediates_path, "scene_division.pt")):
+            data = torch.load(osp.join(intermediates_path, "scene_division.pt"), map_location=self.device)
+            intermediates["scene_bbox"] = MinMaxBoundingBox(**data["scene_bbox"])
+            intermediates["partition_coords"] = PartitionCoordinates(**data["partition_coords"])
+        if osp.exists(osp.join(intermediates_path, "camera_visibility.pt")):
+            intermediates["camera_visibility"] = torch.load(osp.join(intermediates_path, "camera_visibility.pt"), map_location=self.device)
+        if osp.exists(osp.join(intermediates_path, "gaussian_score.pt")):
+            intermediates["gaussian_score"] = torch.load(osp.join(intermediates_path, "gaussian_score.pt"), map_location=self.device)
+        return intermediates
 
     def save_partitions(
         self,
         output_path: str,
+        scene_bbox: MinMaxBoundingBox,
         partition_coords: PartitionCoordinates,
         gaussian_model: VanillaGaussianModel,
         image_set: ImageSet,
         camera_assign: torch.Tensor,
         gaussian_assign: torch.Tensor,
     ):
+        metadata = {}
+        metadata["scene"] = {
+            "transforms": self.config.transforms,
+            "bbox": scene_bbox.min.tolist() + scene_bbox.max.tolist(),
+        }
+        metadata["cells"] = []
+
         for cell_idx, (part_id, part_xy, part_size) in enumerate(tqdm(partition_coords, desc="Saving partitions")):
             cell_dir = osp.join(self.get_cells_dir(output_path), self.get_cell_name(cell_idx))
             os.makedirs(cell_dir, exist_ok=True)
             valid_cam_ids = camera_assign[cell_idx].nonzero().squeeze().tolist()
 
             # Save metadata
-            metadata = {
-                "cell_id": cell_idx,
-                "partition_id": part_id.tolist(),
-                "xy_min": part_xy.tolist(),
-                "xy_max": (part_xy + part_size).tolist(),
-                "transforms": self.config.transforms,
-            }
-            with open(osp.join(cell_dir, "metadata.json"), "w") as f:
-                json.dump(metadata, f, indent=4, separators=(", ", ": "))
+            metadata["cells"].append(
+                {
+                    "id": cell_idx,
+                    "partition_id": part_id.tolist(),
+                    "bbox": part_xy.tolist() + (part_xy + part_size).tolist(),
+                    "n_cameras": len(valid_cam_ids),
+                }
+            )
 
             # Save camera to json
             camera_list = []
@@ -468,39 +571,24 @@ class PartitionableScene:
             GaussianPlyUtils.load_from_model(gaussian_model).to_ply_format().save_to_ply(osp.join(cell_dir, "gaussians.ply"))
             gaussian_model.properties = properties
 
-    def save_plots(
-        self,
-        output_path: str,
-        scene_bbox: MinMaxBoundingBox,
-        partition_coords: PartitionCoordinates,
-        cameras: Cameras,
-        gaussian_model: VanillaGaussianModel,
-        camera_assign: torch.Tensor,
-        gaussian_assign: torch.Tensor,
-    ):
-        figures_dir = self.get_figures_dir(output_path)
-        os.makedirs(figures_dir, exist_ok=True)
+        with open(osp.join(output_path, "metadata.json"), "w") as f:
+            json.dump(metadata, f, indent=4, separators=(", ", ": "))
 
-        # Apply transformation to camera positions
-        campos = cameras.camera_center.to(self.device)
-        campos = campos @ self.rotation.T + self.translation
-
-        # Apply transformation to gaussian means
-        gs_means = gaussian_model.get_xyz.to(self.device)
-        gs_means = gs_means @ self.rotation.T + self.translation
-        gs_rgb = SH2RGB(gaussian_model.get_shs().to(self.device))
-
+    def plot_scene(self, ax: plt.Axes, point_cloud: PointCloud, scene_bbox: MinMaxBoundingBox):
         # Sparsify points
         STEP = 32
-        COLORS = list(iter(cm.rainbow(np.linspace(0, 1, len(partition_coords)))))
+
+        # Apply transformation to point cloud
+        pts_xyz = torch.from_numpy(point_cloud.xyz[::STEP]).to(self.translation)
+        pts_xyz = pts_xyz @ self.rotation.T + self.translation
+        pts_rgb = torch.from_numpy(point_cloud.rgb[::STEP]).to(self.translation) / 255.0
 
         # Plot scene
-        fig, ax = plt.subplots()
-        self.set_plot_ax_limit(ax, scene_bbox)
-        # plot gaussians
-        ax.scatter(gs_means[::STEP, 0].cpu().numpy(), gs_means[::STEP, 1].cpu().numpy(), s=1.0, c=gs_rgb[::STEP].cpu().numpy(), marker=".")
-        # plot scene bbox
-        scene_bbox_min, scene_bbox_max = scene_bbox.min.cpu().numpy(), scene_bbox.max.cpu().numpy()
+        _pts_xyz = torch2numpy(pts_xyz)
+        _pts_rgb = torch2numpy(pts_rgb)
+        pcd_obj = ax.scatter(_pts_xyz[:, 0], _pts_xyz[:, 1], s=0.1, c=_pts_rgb, marker=".")
+        # Plot scene bbox
+        scene_bbox_min, scene_bbox_max = torch2numpy(scene_bbox.min), torch2numpy(scene_bbox.max)
         scene_bbox_obj = ax.add_artist(
             mpatches.Rectangle(
                 (scene_bbox_min[0], scene_bbox_min[1]),
@@ -512,63 +600,62 @@ class PartitionableScene:
                 linestyle="--",
             )
         )
-        fig.savefig(osp.join(figures_dir, "scene.png"), dpi=300)
+        return [pcd_obj, scene_bbox_obj]
+
+    def plot_scene_division(self, ax: plt.Axes, partition_coords: PartitionCoordinates):
         # plot division
-        scene_bbox_obj.remove()
-        for cell_idx, (part_id, part_xy, part_size) in partition_coords:
-            cell_bbox_min, cell_bbox_max = part_xy.cpu().numpy(), (part_xy + part_size).cpu().numpy()
-            ax.add_artist(
+        cell_bbox_objs = []
+        for cell_idx, (part_id, part_xy, part_size) in enumerate(partition_coords):
+            cell_bbox_min, cell_bbox_max = torch2numpy(part_xy), torch2numpy(part_xy + part_size)
+            cell_bbox_obj = ax.add_artist(
                 mpatches.Rectangle(
                     (cell_bbox_min[0], cell_bbox_min[1]),
                     cell_bbox_max[0] - cell_bbox_min[0],
                     cell_bbox_max[1] - cell_bbox_min[1],
                     fill=False,
-                    edgecolor=COLORS[cell_idx % len(COLORS)],
-                    linewidth=2.0,
+                    edgecolor=self.COLORLIST[cell_idx % self.N_COLORS],
+                    linewidth=1.0,
                     linestyle="-",
                 )
             )
-        fig.savefig(osp.join(figures_dir, "scene_division.png"), dpi=300)
-        plt.close(fig)
+            cell_bbox_objs.append(cell_bbox_obj)
+        return cell_bbox_objs
 
-        # Plot cells
-        for cell_idx, (part_id, part_xy, part_size) in enumerate(tqdm(partition_coords, desc="Saving partition plots")):
-            fig, ax = plt.subplots()
-            self.set_plot_ax_limit(ax, scene_bbox)
-            color = COLORS[cell_idx % len(COLORS)]
-            _gs_means = gs_means[gaussian_assign[cell_idx]].cpu().numpy()
-            _gs_rgb = gs_rgb[gaussian_assign[cell_idx]].cpu().numpy()
-            # plot gaussians
-            ax.scatter(_gs_means[::STEP, 0], _gs_means[::STEP, 1], s=1.0, c=_gs_rgb[::STEP], marker=".")
-            # plot cell bbox
-            cell_bbox_min, cell_bbox_max = part_xy.cpu().numpy(), (part_xy + part_size).cpu().numpy()
-            ax.add_artist(
-                mpatches.Rectangle(
-                    (cell_bbox_min[0], cell_bbox_min[1]),
-                    cell_bbox_max[0] - cell_bbox_min[0],
-                    cell_bbox_max[1] - cell_bbox_min[1],
-                    fill=False,
-                    edgecolor=color,
-                    linewidth=2.0,
-                    linestyle="-",
-                )
-            )
-            # Plot cameras
-            _campos = campos[camera_assign[cell_idx]].cpu().numpy()
-            ax.scatter(_campos[:, 0], _campos[:, 1], s=5.0, c="red", marker="o")
-            # Annotate
-            ax.annotate(
-                "Cell #{}: ({}, {}), {} cameras".format(cell_idx, part_id[0].item(), part_id[1].item(), _campos.shape[0]),
-                xy=(
-                    cell_bbox_min[0] + 0.125 * (cell_bbox_max[0] - cell_bbox_min[0]),
-                    cell_bbox_min[1] + 0.25 * (cell_bbox_max[1] - cell_bbox_min[1]),
-                ),
-                fontsize=5,
-            )
-            fig.savefig(osp.join(figures_dir, self.get_cell_name(cell_idx) + ".png"), dpi=300)
-            plt.close(fig)
+    def plot_cell(
+        self, ax: plt.Axes, cell_idx: int, partition_coords: PartitionCoordinates, campos: torch.Tensor, camera_assign: torch.Tensor
+    ):
+        color = self.COLORLIST[cell_idx % self.N_COLORS]
 
-    def set_plot_ax_limit(self, ax, scene_bbox: MinMaxBoundingBox, enlarge: float = 0.2):
+        # plot cell bbox
+        part_id, part_xy, part_size = partition_coords[cell_idx]
+        cell_bbox_min, cell_bbox_max = torch2numpy(part_xy), torch2numpy(part_xy + part_size)
+        cell_bbox_obj = ax.add_artist(
+            mpatches.Rectangle(
+                (cell_bbox_min[0], cell_bbox_min[1]),
+                cell_bbox_max[0] - cell_bbox_min[0],
+                cell_bbox_max[1] - cell_bbox_min[1],
+                fill=False,
+                edgecolor=color,
+                linewidth=1.0,
+                linestyle="-",
+            )
+        )
+        # Plot cameras
+        _campos = torch2numpy(campos[camera_assign[cell_idx]])
+        campos_obj = ax.scatter(_campos[:, 0], _campos[:, 1], s=0.8, c="red", marker="o")
+        # Annotate
+        annotation_obj = ax.annotate(
+            "Cell #{}: ({}, {}), {} cameras".format(cell_idx, part_id[0].item(), part_id[1].item(), _campos.shape[0]),
+            xy=(
+                cell_bbox_min[0] + 0.125 * (cell_bbox_max[0] - cell_bbox_min[0]),
+                cell_bbox_min[1] + 0.25 * (cell_bbox_max[1] - cell_bbox_min[1]),
+            ),
+            fontsize=8,
+        )
+
+        return [cell_bbox_obj, campos_obj, annotation_obj]
+
+    def set_plot_ax_limit(self, ax, scene_bbox: MinMaxBoundingBox, enlarge: float = 0.08):
         x_enlarge = (scene_bbox.max[0] - scene_bbox.min[0]) * enlarge
         y_enlarge = (scene_bbox.max[1] - scene_bbox.min[1]) * enlarge
 
@@ -638,14 +725,27 @@ class PartitionableScene:
         return non_prune_mask
 
     def get_intermediates_path(self, output_path: str) -> str:
-        intermediates_path = osp.join(output_path, "intermediates.pt")
+        intermediates_path = osp.join(output_path, "intermediates")
+        os.makedirs(intermediates_path, exist_ok=True)
         return intermediates_path
 
-    def get_cells_dir(self, output_path: str, cell_idx: int) -> str:
+    def get_cells_dir(self, output_path: str) -> str:
         return osp.join(output_path, "cells")
 
     def get_figures_dir(self, output_path: str) -> str:
-        return osp.join(output_path, "figures")
+        figures_dir = osp.join(output_path, "figures")
+        os.makedirs(figures_dir, exist_ok=True)
+        return figures_dir
 
     def get_cell_name(self, cell_idx: int) -> str:
         return f"cell_{cell_idx:03d}"
+
+    @property
+    def COLORLIST(self):
+        if not hasattr(self, "_colorlist"):
+            self._colorlist = list(iter(cm.rainbow(np.linspace(0, 1, self.N_COLORS))))
+        return self._colorlist
+
+    @property
+    def N_COLORS(self):
+        return 7
