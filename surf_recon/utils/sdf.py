@@ -78,7 +78,7 @@ class TSDFFusion:
         if obs_weights is None:
             obs_weights = torch.ones((len(cameras),), dtype=torch.float32)
 
-        for idx in tqdm(range(len(cameras)), desc="Depth Fusing", leave=True):
+        for idx in tqdm(range(len(cameras)), desc="Depth Fusing", leave=False):
             viewpoint = cameras[idx].to_device(self.device)
             render_pkg = render_fn(viewpoint)
             self.integrate(
@@ -336,7 +336,7 @@ class PointIntegration:
             self.colors = None
 
     def run(self, cameras: Cameras, integrate_fn: Callable, chunk_size: int = 0):
-        for idx in tqdm(range(len(cameras)), desc="Point Integrating", leave=True):
+        for idx in tqdm(range(len(cameras)), desc="Point Integrating", leave=False):
             if idx % 50 == 0:
                 torch.cuda.empty_cache()
                 gc.collect()

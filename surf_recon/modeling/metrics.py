@@ -1,12 +1,13 @@
+import math
 from dataclasses import dataclass, field
 
+import lightning
 import torch
 import torch.nn.functional as F
 
 from internal.cameras import Camera, Cameras
 from internal.metrics.vanilla_metrics import VanillaMetrics, VanillaMetricsImpl
-
-from .utils.sdf import SDFUtils
+from internal.utils.visualizers import Visualizers
 
 
 @dataclass
@@ -28,7 +29,7 @@ class MeshRegularizationSchedule:
     reset_occupancy_label_interval: int = 200
     "Reset occupancy labels of tetrahedra vertices every N iters"
 
-    reset_tetrahedralization_interval: int = 200
+    reset_tetrahedralization_interval: int = 500
     "Reset tetrahedralization every N iters"
 
 
@@ -101,10 +102,6 @@ class MeshRegularizedMetricsImpl(VanillaMetricsImpl):
             error_map_median = 1.0 - (normal * normal_from_median_depth).sum(0)
             error_map_expected = 1.0 - (normal * normal_from_expected_depth).sum(0)
             ratio = 0.6
-            # loss_dn = (
-            #     self.config.median_fusing_ratio * error_map_median.mean()
-            #     + (1.0 - self.config.median_fusing_ratio) * error_map_expected.mean()
-            # )
             loss_dn = (1.0 - ratio) * error_map_median.mean() + ratio * error_map_expected.mean()
 
         metrics["loss_dn"] = loss_dn
@@ -142,11 +139,11 @@ class MeshRegularizedMetricsImpl(VanillaMetricsImpl):
             # Mesh normal regularization
             loss_mesh_normal = torch.tensor(0.0).to(metrics["loss"])
             if self.config.lambda_mesh_normal > 0.0:
-                normal_mesh = outputs.get("mesh_normal", None)  # (H, W, 3) in world coordinate
+                normal_mesh = outputs.get("mesh_normal", None)  # (3, H, W) in world coordinate
                 assert normal_mesh is not None
 
                 normal_mesh = torch.einsum(
-                    "i j, h w i -> j h w", camera.world_to_camera[:3, :3], normal_mesh
+                    "i j, i h w -> j h w", camera.world_to_camera[:3, :3], normal_mesh
                 )  # (3, H, W) in camera coordinate
                 # Compute normal_gaussian by fusing normal_from_median_depth and normal_from_expected_depth
                 if normal_from_median_depth is None:
@@ -172,7 +169,7 @@ class MeshRegularizedMetricsImpl(VanillaMetricsImpl):
 
             # Occupancy label loss
             loss_occupancy_label = torch.tensor(0.0).to(metrics["loss"])
-            if self.config.lambda_occupancy_label > 0.0:
+            if self.config.use_occupancy_label_loss and self.config.lambda_occupancy_label > 0.0:
                 occupancy_logits = getattr(gaussian_model, "get_delaunay_occupancy_logit", None)
                 occupancy_labels = getattr(gaussian_model, "get_delaunay_occupancy_label", None)
                 assert occupancy_logits is not None and occupancy_labels is not None
@@ -194,7 +191,8 @@ class MeshRegularizedMetricsImpl(VanillaMetricsImpl):
                 occupancy = getattr(gaussian_model, "get_delaunay_occupancy", None)
                 assert occupancy is not None
 
-                center_occupancy = occupancy.reshape(-1, 9)[:, -1]
+                occupancy = occupancy[gaussian_model.get_delaunay_gaussian_ids]
+                center_occupancy = occupancy[:, -1]
                 loss_center_isosurface = (isosurface - center_occupancy).clamp(min=0.0).mean()  # gaussian center should be inside surface
 
             metrics["loss_center_isosurface"] = loss_center_isosurface
@@ -202,6 +200,42 @@ class MeshRegularizedMetricsImpl(VanillaMetricsImpl):
             metrics["loss"] += self.config.lambda_center_isosurface * loss_center_isosurface
 
         return metrics, pbar
+
+    def training_setup(self, pl_module):
+        pl_module.extra_train_metrics.append(self._log_rendered_results)
+        return super().training_setup(pl_module)
+
+    @classmethod
+    @torch.no_grad()
+    def _log_rendered_results(cls, outputs, batch, gaussian_model, global_step, pl_module: lightning.LightningModule, metrics, prog_bar):
+        if global_step % 200 == 0:
+            camera, image_info, _ = batch
+            image_name, gt_image, masked_pixels = image_info
+            median_depth = outputs.get("median_depth", None)
+            if median_depth is None:
+                return
+
+            render = outputs["render"]
+            median_depth = outputs["median_depth"]
+            normal = (1.0 - outputs["normal"]) / 2.0
+            mesh_depth = outputs.get("mesh_depth", None)
+            if mesh_depth is not None:
+                mesh_depth = torch.where(mesh_depth > median_depth.min(), mesh_depth, median_depth.min())
+                median_depth = cls.depth2invdepth(median_depth)
+                mesh_depth = cls.depth2invdepth(mesh_depth)
+                mesh_normal = (1.0 - cls.fix_normal_map(camera, outputs["mesh_normal"])) / 2.0
+                img = torch.cat(
+                    [
+                        torch.cat([render, median_depth, normal], dim=-1),
+                        torch.cat([gt_image, mesh_depth, mesh_normal], dim=-1),
+                    ],
+                    dim=-2,
+                )
+            else:
+                median_depth = cls.depth2invdepth(median_depth)
+                img = torch.cat([render, median_depth, normal], dim=-1)
+
+            pl_module.log_image("Rendered", img)
 
     @classmethod
     def depth_to_normal(cls, depth: torch.Tensor, camera: Camera):
@@ -258,3 +292,36 @@ class MeshRegularizedMetricsImpl(VanillaMetricsImpl):
         dy = pointmap[..., 1:-1, 2:] - pointmap[..., 1:-1, :-2]
         normal[..., 1:-1, 1:-1] = F.normalize(torch.cross(dx, dy, dim=0), dim=0)
         return normal
+
+    @staticmethod
+    def depth2invdepth(depth: torch.Tensor):
+        invdepth = 1.0 / depth.clamp_min(1e-6)
+        invdepth = (invdepth - invdepth.min()) / (invdepth.max() - invdepth.min())
+        invdepth = Visualizers.float_colormap(invdepth, "inferno")
+        return invdepth
+
+    @staticmethod
+    def fix_normal_map(view: Camera, normal: torch.Tensor, normal_in_view_space=True):
+        W, H = view.width.item(), view.height.item()
+        intrins_inv = torch.linalg.inv(view.get_K()[:3, :3])
+        grid_x, grid_y = torch.meshgrid(torch.arange(W) + 0.5, torch.arange(H) + 0.5, indexing="xy")
+        points = torch.stack([grid_x, grid_y, torch.ones_like(grid_x)], dim=0).reshape(3, -1).to(normal)
+        rays_d = (intrins_inv @ points).reshape(3, H, W)
+
+        if normal_in_view_space:
+            normal_view = normal
+        else:
+            normal_view = normal.clone()
+            if normal.shape[0] == 3:
+                normal_view = normal_view.permute(1, 2, 0)
+            normal_view = normal_view @ view.world_to_camera[:3, :3]
+            if normal.shape[0] == 3:
+                normal_view = normal_view.permute(2, 0, 1)
+
+        if normal_view.shape[0] != 3:
+            rays_d = rays_d.permute(1, 2, 0)
+            dim_to_sum = -1
+        else:
+            dim_to_sum = 0
+
+        return torch.sign((-rays_d * normal_view).sum(dim=dim_to_sum, keepdim=True)) * normal_view

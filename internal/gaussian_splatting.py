@@ -201,7 +201,7 @@ class GaussianSplatting(LightningModule):
             checkpoint["optimizer_states"] = []
 
         # reinitialize parameters based on the gaussian number in the checkpoint
-        self.gaussian_model.setup_from_number(checkpoint["state_dict"]["gaussian_model.gaussians.means"].shape[0])
+        self.gaussian_model.setup_from_number(checkpoint["state_dict"]["gaussian_model.gaussians.means"].shape[0], checkpoint=checkpoint)
         if "frozen_gaussians.means" in checkpoint["state_dict"]:
             from internal.utils.gaussian_containers import TensorDict
             self.frozen_gaussians = TensorDict({

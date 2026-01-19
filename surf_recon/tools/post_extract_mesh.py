@@ -11,8 +11,8 @@ from internal.cameras import Camera, Cameras
 from internal.dataparsers.colmap_dataparser import Colmap
 from internal.utils.gaussian_model_loader import GaussianModelLoader
 from surf_recon.modeling.mesh_gaussian import MeshGaussianUtils
-from surf_recon.modeling.utils.sdf import PointIntegration, TSDFFusion
-from surf_recon.modeling.utils.tetmesh import marching_tetrahedra
+from surf_recon.utils.sdf import PointIntegration, TSDFFusion
+from surf_recon.utils.tetmesh import marching_tetrahedra
 
 
 def make_parser():

@@ -5,14 +5,15 @@ from typing import Any, Dict
 
 import yaml
 
-from surf_recon.modeling.utils.partitionable_scene import (PartitionableScene,
-                                                           SceneConfig)
+from surf_recon.utils.partitionable_scene import (PartitionableScene,
+                                                  SceneConfig)
+from surf_recon.utils.path_utils import get_partition_info_dir, get_project_dir
 
 
 def make_parser():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", "-c", type=str)
-    parser.add_argument("--project_name", "-p", type=str, required=True)
+    parser.add_argument("--project", "-p", type=str, required=True)
     parser.add_argument("--dataset_path", "-d", type=str, default=argparse.SUPPRESS)
     parser.add_argument("--scene_bbox_enlarge_by_pts", type=float, default=argparse.SUPPRESS)
     parser.add_argument("--scene_bbox_outlier_by_pts", type=float, default=argparse.SUPPRESS)
@@ -50,10 +51,10 @@ def main():
     yaml_cfg = load_from_yaml(args.config) if args.config else {}
     merged = merge_yaml_with_args(yaml_cfg, args)
 
-    merged["coarse_model_path"] = osp.join("outputs", args.project_name, "coarse")
+    merged["coarse_model_path"] = osp.join(get_project_dir(args.project), "coarse")
     scene_config = SceneConfig(**merged)
     scene = scene_config.instantiate(gpu_idx=args.gpu_idx)
-    scene.run(output_path=osp.join("outputs", args.project_name, "partition"))
+    scene.run(output_path=get_partition_info_dir(args.project))
 
 
 if __name__ == "__main__":

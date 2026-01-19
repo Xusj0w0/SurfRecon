@@ -10,21 +10,19 @@ from einops import rearrange
 from tqdm.auto import tqdm
 
 from internal.cameras import Camera, Cameras
-from internal.dataset import CacheDataLoader
 from internal.models.mip_splatting import MipSplatting, MipSplattingModel
-from internal.models.vanilla_gaussian import \
-    OptimizationConfig as VanillaOptimizationConfig
-from internal.models.vanilla_gaussian import (VanillaGaussian,
-                                              VanillaGaussianModel)
+from internal.models.vanilla_gaussian import OptimizationConfig as VanillaOptimizationConfig
+from internal.models.vanilla_gaussian import VanillaGaussian, VanillaGaussianModel
 from internal.optimizers import Adam, OptimizerConfig, SparseGaussianAdam
 from internal.schedulers import ExponentialDecayScheduler, Scheduler
 from internal.utils.general_utils import build_rotation, inverse_sigmoid
 
+from ..utils.mesh import Meshes
+from ..utils.sdf import PointIntegration, SDFUtils, TSDFFusion
+from ..utils.tetmesh import marching_tetrahedra
 from .renderers.mesh import MeshRendererMixin
 from .renderers.radegs import RaDeGSRendererModule
-from .utils.mesh import Meshes
-from .utils.sdf import PointIntegration, SDFUtils, TSDFFusion
-from .utils.tetmesh import marching_tetrahedra
+from .selective_adam import SelectiveOccupancyAdam
 
 try:
     from tetranerf.utils.extension import cpp
@@ -37,7 +35,7 @@ except ImportError:
 class OptimizationConfig(VanillaOptimizationConfig):
     opacities_lr: float = 0.025
 
-    occupancy_lr: float = 0.05
+    occupancy_lr: float = 0.025
 
     optimizer: OptimizerConfig = field(default_factory=lambda: {"class_path": "SparseGaussianAdam"})
 
@@ -91,14 +89,15 @@ class MeshMixin:
         verts = end_points[:, 0, :] * norm_sdf[:, 1, :] + end_points[:, 1, :] * norm_sdf[:, 0, :]
         faces = faces_list[0]
 
+        faces_mask = torch.ones((faces.shape[0],), dtype=torch.bool, device=faces.device)
+
         # Filtering
         if self.config.filter_large_edges or self.config.collapse_large_edges:
             dmtet_distance = torch.norm(end_points[:, 0, :] - end_points[:, 1, :], dim=-1)
             dmtet_scale = end_scales[:, 0, 0] + end_scales[:, 1, 0]
             dmtet_vertex_mask = dmtet_distance <= dmtet_scale
         if self.config.filter_large_edges:
-            faces_mask = dmtet_vertex_mask[faces].all(axis=1)
-            faces = faces[faces_mask]
+            faces_mask = faces_mask & dmtet_vertex_mask[faces].all(axis=1)
         if self.config.collapse_large_edges:
             min_end_points = end_points[
                 np.arange(end_points.shape[0]), end_sdf.argmin(dim=1).flatten().cpu().numpy()
@@ -106,6 +105,7 @@ class MeshMixin:
             verts = torch.where(dmtet_vertex_mask[:, None], verts, min_end_points)
 
         self._mesh = Meshes(verts=verts, faces=faces)
+        self._faces_mask = faces_mask
         return self._mesh
 
     def on_train_batch_end(self, step, module):
@@ -156,9 +156,8 @@ class MeshMixin:
                 train_cameras=train_cameras,
             )
         # if occupancy is reset, optimizer should be reset too
-        if getattr(self, "_occupancy_reset", False):
+        if getattr(self, "_update_optimizer_occupancy", False):
             self._set_delaunay_occupancy_optimizer(module.gaussian_optimizers)
-            self._occupancy_reset = False
 
         # Extract mesh
         self.extract_mesh()
@@ -212,7 +211,7 @@ class MeshMixin:
             isosurface_value=self.config.sdf_isosurface,
         )
         base_occupancy = SDFUtils.convert_sdf_to_occupancy(initial_sdf)  # (N*9,)
-        base_occupancy = rearrange(base_occupancy, "(n k) ... -> n k ...", k=self.config.num_delaunay_points_per_gaussian)
+        base_occupancy = base_occupancy.reshape(-1, self.config.num_delaunay_points_per_gaussian)
         new_occupancy = torch.where(
             self.get_base_occupancy != 0.0,
             self.config.sdf_ema_alpha * base_occupancy + (1.0 - self.config.sdf_ema_alpha) * self.get_delaunay_occupancy,
@@ -221,11 +220,14 @@ class MeshMixin:
         new_occupancy = new_occupancy.clamp(min=0.005, max=0.995)
         self.set_delaunay_occupancy(base_occupancy=base_occupancy, occupancy=new_occupancy)
 
+    @torch.no_grad()
     def reset_occupancy_labels(self, voronoi_points: torch.Tensor, renderer: MeshRendererMixin, train_cameras: Cameras):
         def _render(viewpoint: Camera):
-            render_pkg = renderer.render_mesh(viewpoint_camera=viewpoint, pc=self, render_types=["mesh_depth"])
+            render_pkg = renderer.render_mesh(
+                viewpoint_camera=viewpoint, pc=self, render_types=["mesh_depth"], anti_aliased=False, use_filtered=False
+            )
             depth = render_pkg["mesh_depth"]
-            return {"rgb": depth.new_zeros((3, *depth.shape[:2])), "depth": depth}
+            return {"rgb": depth.new_zeros((3, *depth.shape[-2:])), "depth": depth}
 
         occupancy_labels, *_ = (
             TSDFFusion(points=voronoi_points, use_binary_opacity=True).run(cameras=train_cameras, render_fn=_render).get_outputs()
@@ -257,19 +259,19 @@ class MeshMixin:
             "lr": self.config.optimization.occupancy_lr,
             "name": "occupancy",
         }
-        optimizer = Adam().instantiate([occupancy_params], lr=0.0, eps=1e-15)
+        optimizer = SelectiveOccupancyAdam().instantiate([occupancy_params], lr=0.0, eps=1e-15)
         optimizers.append(optimizer)
+        self._add_optimizer_after_backward_hook_if_available(optimizer, module)
+
         return optimizers, schedulers
 
-    def load_state_dict(self, state_dict, strict=True):
-        num_delaunay_gaussians = len(state_dict.get("tetrahedra.gaussian_ids", []))
-        num_tetrahedra = len(state_dict.get("tetrahedra.delaunay_tets", []))
-        self.setup_extra_properties(num_delaunay_gaussians=num_delaunay_gaussians, num_tetrahedra=num_tetrahedra)
-        return super().load_state_dict(state_dict, strict=strict)
-
-    def before_setup_set_properties_from_number(self, n, property_dict, *args, **kwargs):
+    def before_setup_set_properties_from_number(self, n, property_dict, checkpoint=None, *args, **kwargs):
         super().before_setup_set_properties_from_number(n, property_dict, *args, **kwargs)
-        self.setup_extra_properties()
+        num_delaunay_gaussians, num_tetrahedra = 0, 0
+        if checkpoint is not None:
+            num_delaunay_gaussians = len(checkpoint["state_dict"].get("gaussian_model.tetrahedra.gaussian_ids", []))
+            num_tetrahedra = len(checkpoint["state_dict"].get("gaussian_model.tetrahedra.delaunay_tets", []))
+        self.setup_extra_properties(num_delaunay_gaussians=num_delaunay_gaussians, num_tetrahedra=num_tetrahedra)
 
     def before_setup_set_properties_from_pcd(self, xyz, rgb, property_dict, *args, **kwargs):
         super().before_setup_set_properties_from_pcd(xyz, rgb, property_dict, *args, **kwargs)
@@ -306,19 +308,25 @@ class MeshMixin:
     def get_delaunay_occupancy_logit(self) -> torch.Tensor:
         return self.tetrahedra["base_occupancy"] + self.tetrahedra["occupancy_shift"]
 
+    @torch.no_grad()
     def set_delaunay_occupancy(self, base_occupancy: torch.Tensor, occupancy: Optional[torch.Tensor] = None):
-        self._occupancy_reset = True
         _base_occupancy = self.occupancy_inverse_activation(base_occupancy.to(dtype=torch.float32, device=self.device))
         if occupancy is not None:
             _occupancy_shift = self.occupancy_inverse_activation(occupancy.to(dtype=torch.float32, device=self.device)) - _base_occupancy
         else:
             _occupancy_shift = torch.zeros_like(base_occupancy, dtype=torch.float32, device=self.device)
-        self.tetrahedra["base_occupancy"] = nn.Parameter(_base_occupancy.detach(), requires_grad=False)
-        self.tetrahedra["occupancy_shift"] = nn.Parameter(_occupancy_shift.detach(), requires_grad=True)
+
+        if self.tetrahedra["base_occupancy"].shape == _base_occupancy.shape:
+            self.tetrahedra["base_occupancy"][...] = _base_occupancy
+            self.tetrahedra["occupancy_shift"][...] = _occupancy_shift
+        else:
+            self._update_optimizer_occupancy = True
+            self.tetrahedra["base_occupancy"] = nn.Parameter(_base_occupancy, requires_grad=False)
+            self.tetrahedra["occupancy_shift"] = nn.Parameter(_occupancy_shift, requires_grad=True)
 
     @torch.no_grad()
     def _set_delaunay_occupancy_optimizer(self, optimizers: List[torch.optim.Optimizer]):
-        self._occupancy_reset = False
+        self._update_optimizer_occupancy = False
         for opt in optimizers:
             for group in opt.param_groups:
                 if group["name"] != "occupancy":
@@ -332,12 +340,6 @@ class MeshMixin:
                     # reset states
                     stored_state["exp_avg"] = torch.zeros_like(self.tetrahedra["occupancy_shift"])
                     stored_state["exp_avg_sq"] = torch.zeros_like(self.tetrahedra["occupancy_shift"])
-                    # zero step
-                    if "step" in stored_state:
-                        if torch.is_tensor(stored_state["step"]):
-                            stored_state["step"].zero_()
-                        else:
-                            stored_state["step"] = 0
 
                     # delete old state key by old params from optimizer
                     del opt.state[group["params"][0]]
@@ -363,6 +365,10 @@ class MeshMixin:
     @property
     def mesh(self) -> Optional[Meshes]:
         return getattr(self, "_mesh", None)
+
+    @property
+    def face_mask(self) -> Optional[torch.Tensor]:
+        return getattr(self, "_faces_mask", None)
 
     def occupancy_activation(self, occupancies: torch.Tensor) -> torch.Tensor:
         return torch.sigmoid(occupancies)
@@ -482,7 +488,7 @@ class MeshGaussianUtils:
             vertices = vertices.reshape(-1, 3).contiguous()  # (N * 9, 3)
 
             max_scale, _ = scales.max(dim=-1, keepdim=True)  # (N, 1)
-            vertices_scale = max_scale.repeat(1, 9).reshape(-1).unsqueeze(-1)  # (N * 9, 1)
+            vertices_scale = max_scale.repeat(1, 9).reshape(-1, 1)  # (N * 9, 1)
             return vertices, vertices_scale
 
         if detach_grad:
@@ -594,7 +600,7 @@ class MeshGaussianUtils:
         count_rad = torch.zeros(n_gaussians, device=device, dtype=torch.int32)
         count_vis = torch.zeros(n_gaussians, device=device, dtype=torch.int32)
 
-        for idx in tqdm(range(len(train_cameras)), desc="Sampling surface Gaussians", leave=True):
+        for idx in tqdm(range(len(train_cameras)), desc="Sampling surface Gaussians", leave=False):
             viewpoint = train_cameras[idx].to_device(device)
             outputs = renderer.rasterize_importance(viewpoint, gaussian_model)
             visibility_filter = outputs["visibility_filter"]

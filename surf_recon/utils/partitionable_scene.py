@@ -525,6 +525,7 @@ class PartitionableScene:
             metadata["cells"].append(
                 {
                     "id": cell_idx,
+                    "name": self.get_cell_name(cell_idx),
                     "partition_id": part_id.tolist(),
                     "bbox": part_xy.tolist() + (part_xy + part_size).tolist(),
                     "n_cameras": len(valid_cam_ids),
@@ -724,20 +725,27 @@ class PartitionableScene:
 
         return non_prune_mask
 
-    def get_intermediates_path(self, output_path: str) -> str:
+
+    @staticmethod
+    def get_intermediates_path(output_path: str) -> str:
         intermediates_path = osp.join(output_path, "intermediates")
         os.makedirs(intermediates_path, exist_ok=True)
         return intermediates_path
 
-    def get_cells_dir(self, output_path: str) -> str:
-        return osp.join(output_path, "cells")
+    @staticmethod
+    def get_cells_dir(output_path: str) -> str:
+        cells_dir = osp.join(output_path, "cells")
+        os.makedirs(cells_dir, exist_ok=True)
+        return cells_dir
 
-    def get_figures_dir(self, output_path: str) -> str:
+    @staticmethod
+    def get_figures_dir(output_path: str) -> str:
         figures_dir = osp.join(output_path, "figures")
         os.makedirs(figures_dir, exist_ok=True)
         return figures_dir
 
-    def get_cell_name(self, cell_idx: int) -> str:
+    @staticmethod
+    def get_cell_name(cell_idx: int) -> str:
         return f"cell_{cell_idx:03d}"
 
     @property

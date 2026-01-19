@@ -3,8 +3,11 @@ from typing import List
 
 import torch
 
+from internal.density_controllers.density_controller import Utils
 from internal.density_controllers.vanilla_density_controller import (
     VanillaDensityController, VanillaDensityControllerImpl)
+from internal.models.mip_splatting import (MipSplattingModelMixin,
+                                           MipSplattingUtils)
 from internal.models.vanilla_gaussian import VanillaGaussianModel
 
 
@@ -86,6 +89,9 @@ class MeshGaussianDensityControllerImpl(VanillaDensityControllerImpl):
             big_points_ws = gaussian_model.get_scales().max(dim=1).values > 0.1 * prune_extent
             prune_mask = torch.logical_or(torch.logical_or(prune_mask, big_points_vs), big_points_ws)
         self._prune_points(prune_mask, gaussian_model, optimizers)
+
+        if MipSplattingModelMixin._filter_3d_name in gaussian_model.get_property_names():
+            gaussian_model.compute_3d_filter()
 
         torch.cuda.empty_cache()
 
@@ -175,3 +181,23 @@ class MeshGaussianDensityControllerImpl(VanillaDensityControllerImpl):
         valid_points_mask = ~mask
         self.xyz_gradient_accum_abs = self.xyz_gradient_accum_abs[valid_points_mask]
         self.xyz_gradient_accum_abs_max = self.xyz_gradient_accum_abs_max[valid_points_mask]
+
+    def _reset_opacities(self, gaussian_model: VanillaGaussianModel, optimizers: List[torch.optim.Optimizer]):
+        if MipSplattingModelMixin._filter_3d_name in gaussian_model.get_property_names():
+            current_opacity_with_filter, _ = gaussian_model.get_3d_filtered_scales_and_opacities()
+            opacities_new = torch.min(
+                current_opacity_with_filter, torch.ones_like(current_opacity_with_filter) * self.config.opacity_reset_value
+            )
+            _, compensation = MipSplattingUtils.apply_3d_filter_on_scales(
+                filter_3d=gaussian_model.get_3d_filter(),
+                scales=gaussian_model.get_scales(),
+                compute_opacity_compensation=True,
+            )
+            opacities_new = gaussian_model.opacity_inverse_activation(opacities_new / compensation[..., None])
+            new_parameters = Utils.replace_tensors_to_properties(
+                tensors={"opacities": opacities_new},
+                optimizers=optimizers,
+            )
+            gaussian_model.update_properties(new_parameters)
+        else:
+            super()._reset_opacities(gaussian_model=gaussian_model, optimizers=optimizers)
