@@ -5,6 +5,7 @@ wandb
 tqdm
 viser==0.2.23
 opencv-python-headless==4.10.*
+open3d
 matplotlib
 mediapy==1.2.2
 einops

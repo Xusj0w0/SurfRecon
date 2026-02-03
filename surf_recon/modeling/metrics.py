@@ -60,9 +60,9 @@ class MeshRegularizedMetrics(VanillaMetrics):
     lambda_mesh_normal: float = 0.05
     "Weighting coefficient of loss between gaussian normal and mesh normal"
 
-    lambda_occupancy_label: float = 0.005
+    lambda_occupancy_label: float = 0.0
 
-    lambda_center_isosurface: float = 0.005
+    lambda_center_isosurface: float = 0.0
 
     def instantiate(self, *args, **kwargs):
         return MeshRegularizedMetricsImpl(self)
@@ -71,9 +71,62 @@ class MeshRegularizedMetrics(VanillaMetrics):
 class MeshRegularizedMetricsImpl(VanillaMetricsImpl):
     config: MeshRegularizedMetrics
 
-    def _get_basic_metrics(self, pl_module, gaussian_model, batch, outputs):
-        metrics, pbar = super()._get_basic_metrics(pl_module, gaussian_model, batch, outputs)
+    def get_train_metrics(self, pl_module, gaussian_model, step, batch, outputs):
+        # basic metrics
+        rgb_diff_loss, ssim_metric, rgb_diff_loss_aug = self._compute_basic_metrics(batch, outputs)
+        if rgb_diff_loss_aug is not None:
+            loss = (1.0 - self.lambda_dssim) * rgb_diff_loss_aug + self.lambda_dssim * (1.0 - ssim_metric)
+        else:
+            loss = (1.0 - self.lambda_dssim) * rgb_diff_loss + self.lambda_dssim * (1.0 - ssim_metric)
+            rgb_diff_loss_aug = torch.tensor(0.0).to(loss)
+        metrics = {"loss": loss, "rgb_diff": rgb_diff_loss, "ssim": ssim_metric, "rgb_diff_aug": rgb_diff_loss_aug}
+        pbar = {"loss": True, "rgb_diff": True, "ssim": True, "rgb_diff_aug": True}
 
+        # extra metrics
+        self._update_extra_metrics(pl_module, gaussian_model, batch, outputs, metrics, pbar)
+
+        return metrics, pbar
+
+    def get_validate_metrics(self, pl_module, gaussian_model, batch, outputs):
+        # basic metrics
+        rgb_diff_loss, ssim_metric, rgb_diff_loss_aug = self._compute_basic_metrics(batch, outputs)
+        loss = (1.0 - self.lambda_dssim) * rgb_diff_loss + self.lambda_dssim * (1.0 - ssim_metric)
+        rgb_diff_loss_aug = torch.tensor(0.0).to(loss)
+        metrics = {"loss": loss, "rgb_diff": rgb_diff_loss, "ssim": ssim_metric, "rgb_diff_aug": rgb_diff_loss_aug}
+        pbar = {"loss": True, "rgb_diff": True, "ssim": True, "rgb_diff_aug": False}
+
+        # extra metrics
+        self._update_extra_metrics(pl_module, gaussian_model, batch, outputs, metrics, pbar)
+
+        # PSNR and LPIPS
+        camera, image_info, _ = batch
+        image_name, gt_image, _ = image_info
+        metrics["psnr"] = self.psnr(outputs["render"], gt_image)
+        pbar["psnr"] = True
+        metrics["lpips"] = self.no_state_dict_models["lpips"](outputs["render"].clamp(0.0, 1.0).unsqueeze(0), gt_image.unsqueeze(0))
+        pbar["lpips"] = True
+
+        return metrics, pbar
+
+    def _compute_basic_metrics(self, batch, outputs):
+        # Get batch info
+        camera, image_info, _ = batch
+        image_name, gt_image, masked_pixels = image_info
+        render, render_aug = outputs["render"], outputs["render_aug"]
+        if masked_pixels is not None:
+            masked_pixels = masked_pixels.to(torch.uint8)
+            gt_image = gt_image * masked_pixels
+            render = render * masked_pixels
+            if render_aug is not None:
+                render_aug = render_aug * masked_pixels
+        rgb_diff_loss = self.rgb_diff_loss_fn(render, gt_image)
+        rgb_diff_loss_aug = None
+        if render_aug is not None:
+            rgb_diff_loss_aug = self.rgb_diff_loss_fn(render_aug, gt_image)
+        ssim_metric = self.ssim(render, gt_image)
+        return rgb_diff_loss, ssim_metric, rgb_diff_loss_aug
+
+    def _update_extra_metrics(self, pl_module, gaussian_model, batch, outputs, metrics: dict, pbar: dict):
         # Get batch info
         camera, image_info, _ = batch
         image_name, gt_image, masked_pixels = image_info
@@ -140,7 +193,8 @@ class MeshRegularizedMetricsImpl(VanillaMetricsImpl):
             loss_mesh_normal = torch.tensor(0.0).to(metrics["loss"])
             if self.config.lambda_mesh_normal > 0.0:
                 normal_mesh = outputs.get("mesh_normal", None)  # (3, H, W) in world coordinate
-                assert normal_mesh is not None
+                depth_mesh = outputs.get("mesh_depth", None)
+                assert normal_mesh is not None and depth_mesh is not None
 
                 normal_mesh = torch.einsum(
                     "i j, i h w -> j h w", camera.world_to_camera[:3, :3], normal_mesh
@@ -191,15 +245,12 @@ class MeshRegularizedMetricsImpl(VanillaMetricsImpl):
                 occupancy = getattr(gaussian_model, "get_delaunay_occupancy", None)
                 assert occupancy is not None
 
-                occupancy = occupancy[gaussian_model.get_delaunay_gaussian_ids]
                 center_occupancy = occupancy[:, -1]
                 loss_center_isosurface = (isosurface - center_occupancy).clamp(min=0.0).mean()  # gaussian center should be inside surface
 
             metrics["loss_center_isosurface"] = loss_center_isosurface
             pbar["loss_center_isosurface"] = False
             metrics["loss"] += self.config.lambda_center_isosurface * loss_center_isosurface
-
-        return metrics, pbar
 
     def training_setup(self, pl_module):
         pl_module.extra_train_metrics.append(self._log_rendered_results)
@@ -208,7 +259,7 @@ class MeshRegularizedMetricsImpl(VanillaMetricsImpl):
     @classmethod
     @torch.no_grad()
     def _log_rendered_results(cls, outputs, batch, gaussian_model, global_step, pl_module: lightning.LightningModule, metrics, prog_bar):
-        if global_step % 200 == 0:
+        if global_step % 1000 == 0:
             camera, image_info, _ = batch
             image_name, gt_image, masked_pixels = image_info
             median_depth = outputs.get("median_depth", None)
@@ -223,7 +274,10 @@ class MeshRegularizedMetricsImpl(VanillaMetricsImpl):
                 mesh_depth = torch.where(mesh_depth > median_depth.min(), mesh_depth, median_depth.min())
                 median_depth = cls.depth2invdepth(median_depth)
                 mesh_depth = cls.depth2invdepth(mesh_depth)
-                mesh_normal = (1.0 - cls.fix_normal_map(camera, outputs["mesh_normal"])) / 2.0
+                mesh_normal = torch.einsum(
+                    "i j, i h w -> j h w", camera.world_to_camera[:3, :3], outputs["mesh_normal"]
+                )  # (3, H, W) in camera coordinate
+                mesh_normal = (1.0 - cls.fix_normal_map(camera, mesh_normal)) / 2.0
                 img = torch.cat(
                     [
                         torch.cat([render, median_depth, normal], dim=-1),
@@ -268,7 +322,13 @@ class MeshRegularizedMetricsImpl(VanillaMetricsImpl):
         H, W = depth.shape[-2:]
         assert camera.height.item() == H and camera.width.item() == W
 
-        intrins_inv = torch.linalg.inv(camera.get_K()[..., :3, :3])
+        intrins_inv = torch.tensor(
+            [
+                [1 / camera.fx, 0.0, -camera.width / (2 * camera.fx)],
+                [0.0, 1 / camera.fy, -camera.height / (2 * camera.fy)],
+                [0.0, 0.0, 1.0],
+            ]
+        ).to(depth)
         grid_x, grid_y = torch.meshgrid(torch.arange(W) + 0.5, torch.arange(H) + 0.5, indexing="xy")
         points = torch.stack([grid_x, grid_y, torch.ones_like(grid_x)], dim=0).to(intrins_inv).reshape(3, -1)
         rays_d = intrins_inv @ points

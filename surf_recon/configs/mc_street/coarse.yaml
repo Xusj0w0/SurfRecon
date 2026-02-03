@@ -1,32 +1,39 @@
 max_steps: 60_000
 save_iterations: [30_000, 60_000]
-output: outputs/mc_aerial
+output: outputs/mc_street
 name: coarse
 
 data:
-  path: data/MatrixCity/aerial
+  path: data/MatrixCity/street
   parser:
     class_path: internal.dataparsers.Colmap
     init_args:
       split_mode: experiment
       eval_image_select_mode: list
-      eval_list: data/MatrixCity/aerial/val_images.txt
+      eval_list: data/MatrixCity/street/val_images.txt
   train_max_num_images_to_cache: 256
   num_workers: 6
   async_caching: true
+  # add_background_sphere: true
+  # background_sphere_center: cameras
+  # background_sphere_color: white
 
 model:
+  background_color: [1.0, 1.0, 1.0]
   gaussian:
     class_path: internal.models.vanilla_gaussian.VanillaGaussian
     init_args:
       optimization:
-        means_lr_init: 6.4e-5
+        scales_lr: 1e-3
+        means_lr_init: 1.6e-6
         means_lr_scheduler:
-          lr_final: 6.4e-7
+          lr_final: 1.6e-6
           max_steps: 60_000
   density:
     class_path: internal.density_controllers.vanilla_density_controller.VanillaDensityController
     init_args:
-      densification_interval: 200
-      opacity_reset_interval: 6000
+      densify_grad_threshold: 2e-5
+      densify_from_iter: 4000
+      densification_interval: 500
+      opacity_reset_interval: 60_000
       densify_until_iter: 30_000

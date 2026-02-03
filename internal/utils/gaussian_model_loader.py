@@ -104,7 +104,7 @@ class GaussianModelLoader:
             else:
                 model = VanillaGaussian(sh_degree=sh_degree).instantiate()
 
-        model.setup_from_number(model_state_dict["gaussians.means"].shape[0])
+        model.setup_from_number(model_state_dict["gaussians.means"].shape[0], checkpoint=checkpoint)
         model.to(device)
         model.load_state_dict(model_state_dict)
 

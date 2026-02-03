@@ -35,7 +35,7 @@ class CLI(LightningCLI):
         parser.add_argument("--version", "-v", type=Optional[str], default=None,
                             help="the training result output path will be 'output/name/version'")
         # TODO: add max_steps to save_iterations, but need to compatible with --max_steps < 0 & --max_epochs > 0
-        parser.add_argument("--save_iterations", type=List[int], default=[7_000, 30_000])
+        parser.add_argument("--save_iterations", type=int, default=[7_000, 30_000], nargs="+")
         parser.add_argument("--logger", type=str, default="tensorboard")
         parser.add_argument("--project", type=str, default="Gaussian-Splatting", help="WanDB project name")
         parser.add_argument("--output", type=str, default=os.path.join(

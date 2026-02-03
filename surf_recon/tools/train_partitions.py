@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import os.path as osp
 import subprocess
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -9,7 +10,8 @@ from typing import List
 
 import py3nvml.py3nvml as nvml
 
-from surf_recon.utils.path_utils import (get_cells_output_dir,
+from surf_recon.utils.path_utils import (get_cell_partition_info_dir,
+                                         get_cells_output_dir,
                                          get_partition_info_dir,
                                          get_trained_cells_dir)
 from utils.argparser_utils import parser_stoppable_args
@@ -28,20 +30,25 @@ def train_a_cell(project, cell, config_path, training_args, free_gpu):
     cell_idx, cell_name = cell
     gpu_id, gpu_uuid = free_gpu
     output_path = get_cells_output_dir(project)
+    partition_info_dir = get_partition_info_dir(project)
 
+    # fmt: off
     args = [
-        "python",
-        "main.py",
+        "python", "main.py", "fit",
         "--config={}".format(config_path),
         "--output={}".format(output_path),
         "--name={}".format(cell_name),
+        "--data.parser.image_list={}".format(osp.join(get_cell_partition_info_dir(partition_info_dir, cell_name), "image_list.txt")),
+        "--model.initialize_from={}".format(osp.join(get_cell_partition_info_dir(partition_info_dir, cell_name), "gaussians.ply")),
         "--logger=tensorboard",
     ]
+    # fmt: on
     args += training_args
 
-    logfile = os.path.join(output_path, cell_name, "train.log")
-    os.makedirs(os.path.dirname(logfile), exist_ok=True)
-    with open(logfile, "w") as f:
+    os.makedirs(os.path.join(output_path, cell_name), exist_ok=True)
+    with open(os.path.join(output_path, cell_name, "command.txt"), "w") as f:
+        f.write(" ".join(args) + "\n")
+    with open(os.path.join(output_path, cell_name, "train.log"), "w") as f:
         f.write(" ".join(args) + "\n")
 
         ret_code = subprocess.run(
@@ -109,11 +116,11 @@ def main():
             gpu_available = False
             fail_cnt = 0
             while not gpu_available:
-                free_gpus = get_free_gpus(available_gpu_ids=gpu_indices)
+                free_gpus = get_free_gpus(valid_gpu_ids=gpu_indices)
                 if len(free_gpus) > 0:
                     gpu_available = True
-                elif fail_cnt >= 90:
-                    print("No free GPUs available in 6 hour, exiting...")
+                elif fail_cnt >= 240:
+                    print("No free GPUs available in 8 hour, exiting...")
                 else:
                     fail_cnt += 1
                     print("No free GPUs available, waiting for 2 minutes...")
@@ -134,3 +141,7 @@ def main():
 
         for f in as_completed(tasks):
             f.result()
+
+
+if __name__ == "__main__":
+    main()

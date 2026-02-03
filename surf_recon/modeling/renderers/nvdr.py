@@ -73,7 +73,7 @@ class RasterizerOutputs:
 
 
 @dataclass
-class MeshRasterizationConfig:
+class NVDRRasterizationConfig:
     use_opengl: bool = False
     "Nvdiff use OpenGL or CUDA context"
 
@@ -82,14 +82,14 @@ class MeshRasterizationConfig:
     check_errors: bool = True
 
 
-class MeshRendererMixin:
+class NVDRRendererMixin:
     def render_mesh(
         self,
         viewpoint_camera: Camera,
-        pc: GaussianModel,
+        mesh: Meshes,
         render_types: Optional[list] = None,
-        anti_aliased: Optional[bool] = None,
-        use_filtered: bool = True,
+        anti_aliased: bool = True,
+        check_errors: bool = True,
         max_triangles_in_batch: int = -1,
         *args,
         **kwargs,
@@ -97,18 +97,9 @@ class MeshRendererMixin:
         if render_types is None:
             render_types = ["mesh_depth"]
         if anti_aliased is None:
-            anti_aliased = self.config.mesh_rast_config.anti_aliased
+            anti_aliased = self.config.nvdr_config.anti_aliased
 
-        mesh: Meshes = getattr(pc, "mesh", None)
-        if mesh is None:
-            mesh = pc.extract_mesh()
-        # filter by camera frustum
-        vert_mask = self.is_in_view_frustum(mesh.verts, viewpoint_camera)
-        face_mask = vert_mask[mesh.faces].any(dim=-1)
-        if use_filtered:
-            face_mask = face_mask & pc.face_mask
-        mesh_view = Meshes(verts=mesh.verts, faces=mesh.faces[face_mask])
-
+        mesh_view = self.cull_mesh(mesh, viewpoint_camera)
         # Rasterize
         if max_triangles_in_batch < 0:
             rast_out, verts_in_ndc = self.nvdiff_rasterization(viewpoint_camera, mesh_view.verts, mesh_view.faces, self._gl_context)
@@ -176,7 +167,7 @@ class MeshRendererMixin:
         if normal_required:
             pix_to_face = rast_out.pix_to_face
             valid_mask = pix_to_face >= 0
-            if self.config.mesh_rast_config.check_errors:
+            if check_errors:
                 error_mask = pix_to_face >= mesh_view.faces.shape[0]
                 error_encourtered = torch.sum(error_mask)
                 if error_encourtered > 0:
@@ -186,12 +177,20 @@ class MeshRendererMixin:
 
         return output_pkg
 
-    def setup(self, stage: str, *args, **kwargs):
-        super().setup(stage, *args, **kwargs)
-        if self.config.mesh_rast_config.use_opengl:
+    def setup(self, stage: str, lightning_module=None, use_opengl: bool = False, *args, **kwargs):
+        super().setup(stage=stage, lightning_module=lightning_module, *args, **kwargs)
+        if use_opengl:
             self._gl_context = dr.RasterizeGLContext()
         else:
             self._gl_context = dr.RasterizeCudaContext()
+
+    @classmethod
+    def cull_mesh(cls, mesh: Meshes, camera: Camera):
+        # filter by camera frustum
+        vert_mask = cls.is_in_view_frustum(mesh.verts, camera)
+        face_mask = vert_mask[mesh.faces].any(dim=-1)
+        mesh_view = Meshes(verts=mesh.verts, faces=mesh.faces[face_mask])
+        return mesh_view
 
     @staticmethod
     def nvdiff_rasterization(
@@ -220,7 +219,18 @@ class MeshRendererMixin:
 
     @staticmethod
     def is_in_view_frustum(points: torch.Tensor, camera: Camera):
-        pts_clip = torch.cat([points, points.new_ones((len(points), 1))], dim=1) @ camera.full_projection
-        pts_ndc = pts_clip[..., :2] / (pts_clip[..., -1:] + 1e-8)
-        valid_mask = (pts_ndc > -1.1).all(dim=-1) & (pts_ndc < 1.1).all(dim=-1) & (pts_clip[..., -1] > 0.01) & (pts_clip[..., -1] < 100.0)
+        pts_cam = torch.cat([points, points.new_ones((len(points), 1))], dim=-1) @ camera.world_to_camera
+        pts_cam = pts_cam[..., :3]
+        pts_ndc = torch.cat([pts_cam, pts_cam.new_ones((len(pts_cam), 1))], dim=-1) @ camera.projection
+        pts_pixel = pts_ndc[..., :2] / pts_ndc[..., -1:].clamp_min(1e-6)
+        pts_pixel = (pts_pixel + 1) / 2 * torch.tensor([[camera.width, camera.height]]).to(pts_pixel) - 0.5
+        pts_pixel = torch.round(pts_pixel).long()
+        valid_mask = (
+            (pts_pixel[..., 0] >= 0)
+            & (pts_pixel[..., 0] <= camera.width - 1)
+            & (pts_pixel[..., 1] >= 0)
+            & (pts_pixel[..., 1] <= camera.height - 1)
+            & (pts_cam[..., -1] > 0.01)
+            & (pts_cam[..., -1] < 100.0)
+        )
         return valid_mask

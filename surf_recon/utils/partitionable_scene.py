@@ -22,8 +22,10 @@ from internal.models.vanilla_gaussian import VanillaGaussianModel
 from internal.renderers.vanilla_renderer import VanillaRenderer
 from internal.utils.gaussian_model_loader import GaussianModelLoader
 from internal.utils.gaussian_utils import GaussianPlyUtils
+from internal.utils.general_utils import build_rotation
 from internal.utils.sh_utils import SH2RGB, eval_sh
 from surf_recon.modeling.renderers.importance import rasterize_importance
+from surf_recon.utils.path_utils import get_cell_partition_info_dir
 
 
 def torch2numpy(tensor: torch.Tensor) -> np.ndarray:
@@ -78,25 +80,22 @@ class PartitionCoordinates:
         )
 
     def extend_to_bbox(self, bbox: MinMaxBoundingBox):
+        _xymin = self.xy.clone()
+        _xymax = _xymin + self.size.clone()
+        _id = self.id.clone()
+
         x_dim, y_dim = self.id[:, 0].max().item() + 1, self.id[:, 1].max().item() + 1
-
         for cell_idx in range(len(self)):
-            indices, xymin, size = self[cell_idx]
-            _xymin = xymin.clone()
-            _xymax = _xymin + size
-            if indices[0] == 0:
-                _xymin[0] = bbox.min[0]
-            if indices[0] == x_dim - 1:
-                _xymax[0] = bbox.max[0]
-            if indices[1] == 0:
-                _xymin[1] = bbox.min[1]
-            if indices[1] == y_dim - 1:
-                _xymax[1] = bbox.max[1]
+            if _id[cell_idx][0] == 0:
+                _xymin[cell_idx][0] = bbox.min[0]
+            if _id[cell_idx][0] == x_dim - 1:
+                _xymax[cell_idx][0] = bbox.max[0]
+            if _id[cell_idx][1] == 0:
+                _xymin[cell_idx][1] = bbox.min[1]
+            if _id[cell_idx][1] == y_dim - 1:
+                _xymax[cell_idx][1] = bbox.max[1]
 
-            self.xy[cell_idx][0] = _xymin[0]
-            self.xy[cell_idx][1] = _xymin[1]
-            self.size[cell_idx][0] = _xymax[0] - _xymin[0]
-            self.size[cell_idx][1] = _xymax[1] - _xymin[1]
+            return PartitionCoordinates(id=_id, xy=_xymin, size=_xymax - _xymin)
 
 
 @dataclass
@@ -116,10 +115,10 @@ class SceneConfig(InstantiatableConfig):
 
     scene_bbox_enlarge_by_campos: float = 0.2
 
-    bbox_enlarge_by_campos: float = 0.1
+    bbox_enlarge_by_campos: float = 0.2
     "Enlarge block bbox for camera position based assignment"
 
-    bbox_enlarge_by_camvis: float = 0.1
+    bbox_enlarge_by_camvis: float = 0.2
     "Enlarge block bbox for camera visibility computation"
 
     camera_visibility_threshold: float = 0.25
@@ -139,12 +138,9 @@ class SceneConfig(InstantiatableConfig):
 
 
 class PartitionableScene:
-    def __init__(self, config: SceneConfig, gpu_idx: Optional[int] = None, **kwargs):
+    def __init__(self, config: SceneConfig, **kwargs):
         self.config = config
-        if gpu_idx is None or gpu_idx < 0:
-            raise ValueError("GPU index must be specified and non-negative")
-        else:
-            self.device = torch.device(f"cuda:{gpu_idx}")
+        self.device = torch.device("cuda")
 
     def run(self, output_path: str):
         os.makedirs(output_path, exist_ok=True)
@@ -267,8 +263,8 @@ class PartitionableScene:
             ckpt_path, device=self.device, eval_mode=False, pre_activate=False
         )
         dataparser: Colmap = ckpt["datamodule_hyper_parameters"]["parser"]
-        dataparser.points_from = "sfm"
         dataparser.split_mode = "reconstruction"
+        dataparser.points_from = "sfm"
         dataparser_outputs = dataparser.instantiate(path=self.config.dataset_path, output_path=os.getcwd(), global_rank=0).get_outputs()
         return gaussian_model, renderer, ckpt, dataparser_outputs
 
@@ -517,7 +513,7 @@ class PartitionableScene:
         metadata["cells"] = []
 
         for cell_idx, (part_id, part_xy, part_size) in enumerate(tqdm(partition_coords, desc="Saving partitions")):
-            cell_dir = osp.join(self.get_cells_dir(output_path), self.get_cell_name(cell_idx))
+            cell_dir = get_cell_partition_info_dir(output_path, self.get_cell_name(cell_idx))
             os.makedirs(cell_dir, exist_ok=True)
             valid_cam_ids = camera_assign[cell_idx].nonzero().squeeze().tolist()
 
@@ -679,7 +675,7 @@ class PartitionableScene:
         if not hasattr(self, "_rotation"):
             transforms = torch.tensor(self.config.transforms, device=self.device)
             rotation = transforms[:4]
-            self._rotation = self.quat2mat(rotation)
+            self._rotation = build_rotation(rotation.unsqueeze(0)).squeeze(0)
         return self._rotation
 
     @property
@@ -688,26 +684,6 @@ class PartitionableScene:
             transforms = torch.tensor(self.config.transforms, device=self.device)
             self._translation = transforms[4:]
         return self._translation
-
-    @staticmethod
-    def quat2mat(quat: torch.Tensor) -> torch.Tensor:
-        """
-        Convert quaternion to rotation matrix.
-        :param quat: [4] tensor
-        :return: [3, 3] tensor
-        """
-        quat = quat / torch.norm(quat, dim=-1, keepdim=True)
-        w, x, y, z = quat[..., 0], quat[..., 1], quat[..., 2], quat[..., 3]
-        rotmat = torch.tensor(
-            [
-                [1 - 2 * y * y - 2 * z * z, 2 * x * y - 2 * w * z, 2 * x * z + 2 * w * y],
-                [2 * x * y + 2 * w * z, 1 - 2 * x * x - 2 * z * z, 2 * y * z - 2 * w * x],
-                [2 * x * z - 2 * w * y, 2 * y * z + 2 * w * x, 1 - 2 * x * x - 2 * y * y],
-            ],
-            dtype=quat.dtype,
-            device=quat.device,
-        )
-        return rotmat
 
     @staticmethod
     def init_cdf_mask(importance: torch.Tensor, threshold: float):
@@ -725,18 +701,11 @@ class PartitionableScene:
 
         return non_prune_mask
 
-
     @staticmethod
     def get_intermediates_path(output_path: str) -> str:
         intermediates_path = osp.join(output_path, "intermediates")
         os.makedirs(intermediates_path, exist_ok=True)
         return intermediates_path
-
-    @staticmethod
-    def get_cells_dir(output_path: str) -> str:
-        cells_dir = osp.join(output_path, "cells")
-        os.makedirs(cells_dir, exist_ok=True)
-        return cells_dir
 
     @staticmethod
     def get_figures_dir(output_path: str) -> str:

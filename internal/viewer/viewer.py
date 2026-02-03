@@ -16,6 +16,7 @@ from internal.utils.gaussian_model_editor import MultipleGaussianModelEditor
 from internal.viewer import ClientThread, ViewerRenderer
 from internal.viewer.ui import populate_render_tab, TransformPanel, EditPanel
 from internal.viewer.ui.up_direction_folder import UpDirectionFolder
+from internal.viewer.ui.pose_controller_folder import PoseControllerFolder
 
 DROPDOWN_USE_DIRECT_APPEARANCE_EMBEDDING_VALUE = "@Direct"
 
@@ -650,6 +651,9 @@ class Viewer:
 
             if not self.demo_mode:
                 UpDirectionFolder(self, server)
+
+            # add pose controller
+            PoseControllerFolder(self, server)
 
             go_to_scene_center = server.gui.add_button(
                 "Go to scene center",

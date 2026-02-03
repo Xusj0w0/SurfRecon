@@ -46,6 +46,18 @@ void rasterize_importance(const dim3 grid, dim3 block, const uint2 *ranges,
                           uint32_t *n_contrib, float *accum_weights,
                           int *num_hit_pixels, int *num_max_pixels);
 
+void preprocess_with_zbuf(
+    int P, int D, int M, const float *means3D, const glm::vec3 *scales,
+    const float scale_modifier, const glm::vec4 *rotations,
+    const float *opacities, const float *shs, bool *clamped,
+    const float *cov3D_precomp, const float *colors_precomp,
+    const float *viewmatrix, const float *projmatrix, const glm::vec3 *cam_pos,
+    const int W, int H, const float focal_x, float focal_y,
+    const float tan_fovx, float tan_fovy, int *radii, float2 *means2D,
+    float *depths, float *cov3Ds, float *rgb, float4 *conic_opacity,
+    const dim3 grid, uint32_t *tiles_touched, const float *zbuf,
+    const float tolerance, bool prefiltered);
+
 } // namespace FORWARD
 
 #endif

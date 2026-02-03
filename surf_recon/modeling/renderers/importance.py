@@ -3,14 +3,11 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Tuple, Union
 
 import torch
-# from diff_gaussian_rasterization_ms import (GaussianRasterizationSettings,
-#                                             GaussianRasterizer)
 from diff_gaussian_rasterization import (GaussianRasterizationSettings,
                                          GaussianRasterizer)
 
 from internal.cameras import Camera, Cameras
 from internal.models.gaussian import GaussianModel
-from internal.utils.sh_utils import eval_sh
 
 
 def rasterize_importance(
@@ -22,7 +19,7 @@ def rasterize_importance(
     override_scale: Optional[torch.Tensor] = None,
 ):
     # Create zero tensor. We will use it to make pytorch return gradients of the 2D (screen-space) means
-    screenspace_points = torch.zeros_like(pc.get_xyz, dtype=pc.get_xyz.dtype, requires_grad=True, device=bg_color.device) + 0
+    screenspace_points = torch.zeros_like(pc.get_xyz, dtype=pc.get_xyz.dtype, requires_grad=True, device=pc.get_xyz.device) + 0
 
     # Set up rasterization configuration
     tanfovx = math.tan(viewpoint_camera.fov_x * 0.5)

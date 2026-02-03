@@ -1,17 +1,17 @@
-max_steps: 60_000
-save_iterations: [30_000, 60_000]
-output: outputs/mc_aerial
+max_steps: 30_000
+save_iterations: [15_000, 30_000]
+output: outputs/lfls
 name: coarse
 
 data:
-  path: data/MatrixCity/aerial
+  path: data/GauU_Scene/LFLS
   parser:
     class_path: internal.dataparsers.Colmap
     init_args:
       split_mode: experiment
-      eval_image_select_mode: list
-      eval_list: data/MatrixCity/aerial/val_images.txt
-  train_max_num_images_to_cache: 256
+      eval_image_select_mode: ratio
+      eval_ratio: 0.1
+  train_max_num_images_to_cache: -1
   num_workers: 6
   async_caching: true
 
@@ -23,10 +23,11 @@ model:
         means_lr_init: 6.4e-5
         means_lr_scheduler:
           lr_final: 6.4e-7
-          max_steps: 60_000
+          max_steps: 30_000
   density:
     class_path: internal.density_controllers.vanilla_density_controller.VanillaDensityController
     init_args:
-      densification_interval: 200
-      opacity_reset_interval: 6000
-      densify_until_iter: 30_000
+      densify_grad_threshold: 3e-4
+      densification_interval: 100
+      opacity_reset_interval: 3000
+      densify_until_iter: 15_000

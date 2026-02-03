@@ -11,8 +11,10 @@ from tqdm.auto import tqdm
 
 from internal.cameras import Camera, Cameras
 from internal.models.mip_splatting import MipSplatting, MipSplattingModel
-from internal.models.vanilla_gaussian import OptimizationConfig as VanillaOptimizationConfig
-from internal.models.vanilla_gaussian import VanillaGaussian, VanillaGaussianModel
+from internal.models.vanilla_gaussian import \
+    OptimizationConfig as VanillaOptimizationConfig
+from internal.models.vanilla_gaussian import (VanillaGaussian,
+                                              VanillaGaussianModel)
 from internal.optimizers import Adam, OptimizerConfig, SparseGaussianAdam
 from internal.schedulers import ExponentialDecayScheduler, Scheduler
 from internal.utils.general_utils import build_rotation, inverse_sigmoid
@@ -20,7 +22,7 @@ from internal.utils.general_utils import build_rotation, inverse_sigmoid
 from ..utils.mesh import Meshes
 from ..utils.sdf import PointIntegration, SDFUtils, TSDFFusion
 from ..utils.tetmesh import marching_tetrahedra
-from .renderers.mesh import MeshRendererMixin
+from .renderers.nvdr import NVDRRendererMixin
 from .renderers.radegs import RaDeGSRendererModule
 from .selective_adam import SelectiveOccupancyAdam
 
@@ -89,23 +91,20 @@ class MeshMixin:
         verts = end_points[:, 0, :] * norm_sdf[:, 1, :] + end_points[:, 1, :] * norm_sdf[:, 0, :]
         faces = faces_list[0]
 
-        faces_mask = torch.ones((faces.shape[0],), dtype=torch.bool, device=faces.device)
-
         # Filtering
         if self.config.filter_large_edges or self.config.collapse_large_edges:
             dmtet_distance = torch.norm(end_points[:, 0, :] - end_points[:, 1, :], dim=-1)
             dmtet_scale = end_scales[:, 0, 0] + end_scales[:, 1, 0]
             dmtet_vertex_mask = dmtet_distance <= dmtet_scale
         if self.config.filter_large_edges:
-            faces_mask = faces_mask & dmtet_vertex_mask[faces].all(axis=1)
+            faces_mask = dmtet_vertex_mask[faces].all(axis=1)
         if self.config.collapse_large_edges:
             min_end_points = end_points[
                 np.arange(end_points.shape[0]), end_sdf.argmin(dim=1).flatten().cpu().numpy()
             ]  # TODO: Do the computation only for filtered vertices
             verts = torch.where(dmtet_vertex_mask[:, None], verts, min_end_points)
 
-        self._mesh = Meshes(verts=verts, faces=faces)
-        self._faces_mask = faces_mask
+        self._mesh = Meshes(verts=verts, faces=faces[faces_mask])
         return self._mesh
 
     def on_train_batch_end(self, step, module):
@@ -159,11 +158,10 @@ class MeshMixin:
         if getattr(self, "_update_optimizer_occupancy", False):
             self._set_delaunay_occupancy_optimizer(module.gaussian_optimizers)
 
-        # Extract mesh
-        self.extract_mesh()
-
         # Reset occupancy labels
         if reset_occupancy_label:
+            with torch.no_grad():
+                self.extract_mesh()
             self.reset_occupancy_labels(
                 voronoi_points=voronoi_points,
                 renderer=renderer,
@@ -221,11 +219,9 @@ class MeshMixin:
         self.set_delaunay_occupancy(base_occupancy=base_occupancy, occupancy=new_occupancy)
 
     @torch.no_grad()
-    def reset_occupancy_labels(self, voronoi_points: torch.Tensor, renderer: MeshRendererMixin, train_cameras: Cameras):
+    def reset_occupancy_labels(self, voronoi_points: torch.Tensor, renderer: NVDRRendererMixin, train_cameras: Cameras):
         def _render(viewpoint: Camera):
-            render_pkg = renderer.render_mesh(
-                viewpoint_camera=viewpoint, pc=self, render_types=["mesh_depth"], anti_aliased=False, use_filtered=False
-            )
+            render_pkg = renderer.render_mesh(viewpoint_camera=viewpoint, mesh=self.mesh, render_types=["mesh_depth"], anti_aliased=False)
             depth = render_pkg["mesh_depth"]
             return {"rgb": depth.new_zeros((3, *depth.shape[-2:])), "depth": depth}
 
@@ -390,6 +386,31 @@ class MeshGaussian(MeshConfigMixin, MipSplatting):
 
 
 class MeshGaussianModel(MeshMixin, MipSplattingModel):
+    def setup_from_gaussians(self, gaussian_model: VanillaGaussianModel, *args, **kwargs):
+        property_dict = {}
+        for key, val in gaussian_model.gaussians.items():
+            property_dict[key] = nn.Parameter(val.data.clone().detach(), requires_grad=val.requires_grad)
+        if MipSplattingModel._filter_3d_name in self.property_names:
+            property_dict[MipSplattingModel._filter_3d_name] = nn.Parameter(
+                torch.zeros((gaussian_model.n_gaussians, 1)), requires_grad=False
+            )
+
+        self.setup_extra_properties()
+        self.set_properties(property_dict)
+
+        self.active_sh_degree = gaussian_model.active_sh_degree
+        return self
+
+
+@dataclass
+class MeshVanillaGaussian(MeshConfigMixin, VanillaGaussian):
+    optimization: OptimizationConfig = field(default_factory=lambda: OptimizationConfig())
+
+    def instantiate(self, *args, **kwargs):
+        return MeshVanillaGaussianModel(self)
+
+
+class MeshVanillaGaussianModel(MeshMixin, VanillaGaussianModel):
     pass
 
 
@@ -467,7 +488,7 @@ class MeshGaussianUtils:
 
             # opacity filtering
             if opacity_threshold > 0.0:
-                mask = mask & (opacities >= opacity_threshold)
+                mask = mask & (opacities.squeeze() >= opacity_threshold)
 
             downsample_ratio = mask.sum() / xyz.shape[0]
             xyz, scales, quats = xyz[mask], scales[mask], quats[mask]
@@ -622,7 +643,7 @@ class MeshGaussianUtils:
         n_nonzero_prob = (prob != 0).sum().item()
 
         n_samples = min(n_samples, n_nonzero_prob)
-        indices = torch.multinomial(prob, n_samples, replacement=False)
+        indices = torch.from_numpy(np.random.choice(len(prob), size=n_samples, p=prob.detach().cpu().numpy(), replace=False)).to(device)
         non_prune_mask = torch.zeros(n_gaussians, device=device, dtype=torch.bool)
         non_prune_mask[indices] = True
 

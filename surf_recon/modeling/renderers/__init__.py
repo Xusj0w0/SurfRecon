@@ -1,2 +1,2 @@
-from .full_renderer import FullRaDeGSRenderer, FullRaDeGSRendererModule
+from .mesh_renderer import MeshBindedRenderer, MeshBindedRendererModule
 from .radegs import RaDeGSRenderer, RaDeGSRendererModule

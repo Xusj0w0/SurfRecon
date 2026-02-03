@@ -14,7 +14,7 @@ from internal.utils.colmap import (Camera, Image, Point3D, read_model,
                                    write_model)
 
 
-def make_parser():
+def parse_args():
     parser = argparse.ArgumentParser(description="Convert CityGS-format dataset to Gaussian Splatting Lightning")
     parser.add_argument("--input_dir", type=str, required=True)
     parser.add_argument("--output_dir", type=str, required=True)
@@ -23,7 +23,7 @@ def make_parser():
     parser.add_argument("--ext", nargs="+", default=["jpg", "JPG", "jpeg", "JPEG", "png", "PNG"])
     parser.add_argument("--skip_image", default=False, action="store_true")
     parser.add_argument("--skip_sparse", default=False, action="store_true")
-    return parser
+    return parser.parse_args()
 
 
 def load_sparse_model(sparse_model_path):
@@ -64,14 +64,17 @@ def resize_image(image_path: str, dst_path: str, down_sample_factor: int = 1, re
     width, height = image.size
     resized_width, resized_height = get_resized_size(width, height, down_sample_factor, rescale_width)
 
-    resized_image = image.resize((resized_width, resized_height))
+    if (resized_width, resized_height) != (width, height):
+        resized_image = image.resize((resized_width, resized_height))
+    else:
+        resized_image = image
 
     os.makedirs(osp.dirname(dst_path), exist_ok=True)
     resized_image.save(dst_path, quality=100)
 
 
 def main():
-    args = make_parser().parse_args()
+    args = parse_args()
     os.makedirs(args.output_dir, exist_ok=True)
     with open(osp.join(args.output_dir, "image_info"), "w") as f:
         if args.rescale_width > 0:

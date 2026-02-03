@@ -151,13 +151,15 @@ class GaussianSplatting(LightningModule):
 
         # TODO: may be should adapt sh_degree of ply or checkpoint to current value?
         if load_from.endswith(".ply") is True:
-            from internal.utils.gaussian_utils import Gaussian as GaussianUtils
+            # from internal.utils.gaussian_utils import Gaussian as GaussianUtils
             gaussian_model, _ = GaussianModelLoader.initialize_model_and_renderer_from_ply_file(
                 ply_file_path=load_from,
                 device=self.device,
                 eval_mode=False,
                 pre_activate=False,
             )
+            if hasattr(self.gaussian_model, "setup_from_gaussians"):
+                gaussian_model = self.gaussian_model.setup_from_gaussians(gaussian_model)
         else:
             # load from ckpt
             gaussian_model, _, _ = GaussianModelLoader.initialize_model_and_renderer_from_checkpoint_file(
