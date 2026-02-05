@@ -1,10 +1,8 @@
 max_steps: 30_000
 save_iterations: [15_000, 30_000]
-output: outputs/lfls
-name: coarse
 
 data:
-  path: data/GauU_Scene/LFLS
+  path: data/GauU_Scene/CUHK_UPPER_CAMPUS
   parser:
     class_path: internal.dataparsers.Colmap
     init_args:
@@ -16,9 +14,8 @@ data:
   async_caching: true
 
 model:
-  renderer_output_types: [rgb, depth, normal]
   gaussian:
-    class_path: internal.models.vanilla_gaussian.VanillaGaussian
+    class_path: surf_recon.modeling.mesh_gaussian.MeshGaussian
     init_args:
       optimization:
         means_lr_init: 6.4e-5
@@ -26,11 +23,15 @@ model:
           lr_final: 6.4e-7
           max_steps: 30_000
   renderer:
-    class_path: surf_recon.modeling.renderers.RaDeGSRenderer
+    class_path: surf_recon.modeling.renderers.MeshBindedRenderer
   metric:
-    class_path: surf_recon.modeling.metrics.InvDepthRegularizedMetrics
+    class_path: surf_recon.modeling.metrics.MeshRegularizedMetrics
+    init_args:
+      mesh_regularization_schedule:
+        start_iter: 20_000
+        reset_occupancy_stop_iter: 25_000
   density:
-    class_path: surf_recon.modeling.density_controllers.TrimDensityController
+    class_path: surf_recon.modeling.density_controllers.MeshGaussianDensityController
     init_args:
       densification_interval: 100
       opacity_reset_interval: 3000

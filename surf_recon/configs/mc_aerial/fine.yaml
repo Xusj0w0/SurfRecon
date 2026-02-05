@@ -11,7 +11,7 @@ data:
       eval_list: data/MatrixCity/aerial/val_images.txt
 
 model:
-  background_color: [0.200000, 0.227451, 0.274510]
+  background_color: [0.25, 0.25, 0.25]
   gaussian:
     class_path: surf_recon.modeling.mesh_gaussian.MeshGaussian
     init_args:

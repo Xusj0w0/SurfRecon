@@ -16,6 +16,7 @@ data:
   async_caching: true
 
 model:
+  renderer_output_types: [rgb, depth, normal]
   gaussian:
     class_path: internal.models.vanilla_gaussian.VanillaGaussian
     init_args:
@@ -24,8 +25,12 @@ model:
         means_lr_scheduler:
           lr_final: 6.4e-7
           max_steps: 30_000
+  renderer:
+    class_path: surf_recon.modeling.renderers.RaDeGSRenderer
+  metric:
+    class_path: surf_recon.modeling.metrics.InvDepthRegularizedMetrics
   density:
-    class_path: internal.density_controllers.vanilla_density_controller.VanillaDensityController
+    class_path: surf_recon.modeling.density_controllers.TrimDensityController
     init_args:
       densification_interval: 100
       opacity_reset_interval: 3000
