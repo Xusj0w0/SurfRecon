@@ -13,9 +13,10 @@ scikit-learn
 numpy==1.26
 torchmetrics==1.6.3
 jsonargparse[signatures]>=4.27.7
+torch-scatter --find-links https://data.pyg.org/whl/torch-2.5.1+cu118.html
 submodules/simple-knn
 submodules/diff-gaussian-rasterization
-submodules/diff-gaussian-rasterization_ms
 submodules/diff-gaussian-rasterization_radegs
 submodules/fused-ssim
 submodules/nvdiffrast
+submodules/pytorch3d

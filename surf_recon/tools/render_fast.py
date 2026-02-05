@@ -14,7 +14,8 @@ from tqdm import tqdm
 from internal.dataparsers import DataParserOutputs
 from internal.dataset import CacheDataLoader, Dataset
 from internal.utils.gaussian_model_loader import GaussianModelLoader
-from surf_recon.modeling.renderers.mesh_guided_renderer import NVDRGuidedRenderer
+from surf_recon.modeling.renderers.mesh_guided_renderer import \
+    NVDRGuidedRenderer
 from surf_recon.modeling.renderers.nvdr import NVDRRasterizationConfig
 from surf_recon.utils.mesh import Meshes
 from utils.common import AsyncImageSaver

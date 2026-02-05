@@ -39,7 +39,7 @@ def train_a_cell(project, cell, config_path, training_args, free_gpu):
         "--output={}".format(output_path),
         "--name={}".format(cell_name),
         "--data.parser.image_list={}".format(osp.join(get_cell_partition_info_dir(partition_info_dir, cell_name), "image_list.txt")),
-        "--model.initialize_from={}".format(osp.join(get_cell_partition_info_dir(partition_info_dir, cell_name), "gaussians.ply")),
+        "--model.initialize_from={}".format(osp.join(partition_info_dir, "gaussians.ply")),
         "--logger=tensorboard",
     ]
     # fmt: on

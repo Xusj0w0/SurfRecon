@@ -10,7 +10,8 @@ from einops import rearrange
 from tqdm.auto import tqdm
 
 from internal.cameras import Camera, Cameras
-from internal.models.mip_splatting import MipSplatting, MipSplattingModel
+from internal.models.mip_splatting import (MipSplatting, MipSplattingModel,
+                                           MipSplattingModelMixin)
 from internal.models.vanilla_gaussian import \
     OptimizationConfig as VanillaOptimizationConfig
 from internal.models.vanilla_gaussian import (VanillaGaussian,
@@ -22,6 +23,7 @@ from internal.utils.general_utils import build_rotation, inverse_sigmoid
 from ..utils.mesh import Meshes
 from ..utils.sdf import PointIntegration, SDFUtils, TSDFFusion
 from ..utils.tetmesh import marching_tetrahedra
+from .renderers.importance import rasterize_importance
 from .renderers.nvdr import NVDRRendererMixin
 from .renderers.radegs import RaDeGSRendererModule
 from .selective_adam import SelectiveOccupancyAdam
@@ -39,7 +41,7 @@ class OptimizationConfig(VanillaOptimizationConfig):
 
     occupancy_lr: float = 0.025
 
-    optimizer: OptimizerConfig = field(default_factory=lambda: {"class_path": "SparseGaussianAdam"})
+    optimizer: OptimizerConfig = field(default_factory=lambda: {"class_path": "Adam"})
 
 
 @dataclass
@@ -623,7 +625,7 @@ class MeshGaussianUtils:
 
         for idx in tqdm(range(len(train_cameras)), desc="Sampling surface Gaussians", leave=False):
             viewpoint = train_cameras[idx].to_device(device)
-            outputs = renderer.rasterize_importance(viewpoint, gaussian_model)
+            outputs = rasterize_importance(viewpoint, gaussian_model)
             visibility_filter = outputs["visibility_filter"]
             accum_weights = outputs["accum_weights"]
             num_hit_pixels = outputs["num_hit_pixels"]

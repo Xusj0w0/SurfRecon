@@ -14,9 +14,8 @@ def rasterize_importance(
     viewpoint_camera: Camera,
     pc: GaussianModel,
     scaling_modifier: float = 1.0,
+    weight_map: Optional[torch.Tensor] = None,
     compute_cov3D_python: bool = False,
-    override_opacity: Optional[torch.Tensor] = None,
-    override_scale: Optional[torch.Tensor] = None,
 ):
     # Create zero tensor. We will use it to make pytorch return gradients of the 2D (screen-space) means
     screenspace_points = torch.zeros_like(pc.get_xyz, dtype=pc.get_xyz.dtype, requires_grad=True, device=pc.get_xyz.device) + 0
@@ -42,8 +41,10 @@ def rasterize_importance(
 
     rasterizer = GaussianRasterizer(raster_settings=raster_settings)
 
-    _opacities = override_opacity if override_opacity is not None else pc.get_opacity
-    _scales = override_scale if override_scale is not None else pc.get_scaling
+    if hasattr(pc, "get_3d_filtered_scales_and_opacities"):
+        _opacities, _scales = pc.get_3d_filtered_scales_and_opacities()
+    else:
+        _opacities, _scales = pc.get_opacity, pc.get_scaling
 
     means3D = pc.get_xyz
     means2D = screenspace_points
@@ -61,12 +62,13 @@ def rasterize_importance(
         scales = _scales
 
     # Rasterize visible Gaussians to image, obtain their radii (on screen).
-    num_rendered, radii, accum_weights, num_hit_pixels, num_max_pixels = rasterizer.rasterize_importance(
+    num_rendered, radii, accum_weights, accum_scaled_weights, num_hit_pixels, num_max_pixels = rasterizer.rasterize_importance(
         means3D=means3D,
         means2D=means2D,
         opacities=opacity,
         scales=scales,
         rotations=rotations,
+        weight_map=weight_map,
         cov3D_precomp=cov3D_precomp,
     )
 
@@ -75,6 +77,7 @@ def rasterize_importance(
         "visibility_filter": (radii > 0).nonzero(),
         "radii": radii,
         "accum_weights": accum_weights,
+        "accum_scaled_weights": accum_scaled_weights,
         "num_hit_pixels": num_hit_pixels,
         "num_max_pixels": num_max_pixels,
     }
@@ -86,16 +89,14 @@ class ImportanceMixin:
         viewpoint_camera: Camera,
         pc: GaussianModel,
         scaling_modifier: float = 1.0,
+        weight_map: Optional[torch.Tensor] = None,
         *args,
         **kwargs,
     ):
-        _opacities, _scales = self._get_opacities_and_scales(pc)
-
         return rasterize_importance(
             viewpoint_camera=viewpoint_camera,
             pc=pc,
             scaling_modifier=scaling_modifier,
+            weight_map=weight_map,
             compute_cov3D_python=self.compute_cov3D_python,
-            override_opacity=_opacities,
-            override_scale=_scales,
         )

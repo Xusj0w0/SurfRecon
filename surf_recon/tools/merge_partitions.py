@@ -176,7 +176,7 @@ def main():
                 (gpos[..., :2] <= bbox_unbounded.max).all(dim=-1),
             )
             # Split tetrahedra properties
-            if isinstance(gaussian_model, MeshMixin):
+            if isinstance(gaussian_model, MeshMixin) and gaussian_model.n_delaunay_gaussians > 0:
                 filter_delaunay_gaussians(gaussian_model, is_in_partition)
             # Split gaussian properties
             properties = {}
@@ -192,9 +192,9 @@ def main():
             if isinstance(gaussian_model, MeshMixin):
                 for i in tetras_to_merge.keys():
                     if i == "gaussian_ids":
-                        tetras_to_merge[i].append(gaussian_model.tetrahedra[i] + num_gaussians_merged)
+                        tetras_to_merge[i].append(gaussian_model.tetrahedra[i].data + num_gaussians_merged)
                     else:
-                        tetras_to_merge[i].append(gaussian_model.tetrahedra[i])
+                        tetras_to_merge[i].append(gaussian_model.tetrahedra[i].data)
             num_gaussians_merged += gaussian_model.n_gaussians
 
     # Get merged gaussian model
@@ -205,13 +205,13 @@ def main():
         v.clear()
         gc.collect()
         torch.cuda.empty_cache()
+    gaussian_model.properties = merged_gaussians
     merged_tetras = {}
     for k, v in tetras_to_merge.items():
         merged_tetras[k] = torch.cat(v, dim=0)
         v.clear()
         gc.collect()
         torch.cuda.empty_cache()
-    gaussian_model.properties = merged_gaussians
     if isinstance(gaussian_model, MeshMixin):
         for k, v in merged_tetras.items():
             gaussian_model.tetrahedra[k] = torch.nn.Parameter(v, requires_grad=gaussian_model.tetrahedra[k].requires_grad)

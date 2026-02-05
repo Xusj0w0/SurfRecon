@@ -159,10 +159,6 @@ class PartitionableScene:
         campos = image_set.cameras.camera_center.to(self.device)
         campos_transformed = campos @ self.rotation.T + self.translation
 
-        # Apply transformation to gaussian means
-        gs_means = gaussian_model.get_xyz.detach().clone().to(self.device)
-        gs_means_transformed = gs_means @ self.rotation.T + self.translation
-
         # Compute scene bounding box and division
         scene_bbox = self.get_bounding_box_by_campos(campos_transformed)
         campos_bbox = MinMaxBoundingBox(
@@ -211,29 +207,6 @@ class PartitionableScene:
                 obj.remove()
         plt.close(fig)
 
-        # Gaussian position based assignment
-        gs_pos_assign = self.is_in_bboxes(
-            partition_coords.get_bounding_boxes(enlarge=self.config.bbox_enlarge_by_gaussian_pos), gs_means_transformed
-        )
-        # Gaussian score based assignment
-        gs_score = intermediates.get("gaussian_score", None)
-        if gs_score is None:
-            gs_score = self.compute_gaussian_score(
-                partition_coords=partition_coords,
-                camera_assign=camera_assign,
-                cameras=image_set.cameras,
-                gaussian_model=gaussian_model,
-            )
-            # Save intermediate results
-            intermediates_path = osp.join(self.get_intermediates_path(output_path), "gaussian_score.pt")
-            torch.save(gs_score, intermediates_path)
-        gs_score_assign = gs_pos_assign.new_zeros(gs_pos_assign.shape)
-        for cell_idx in range(len(partition_coords)):
-            gs_score_assign[cell_idx] = self.init_cdf_mask(gs_score[cell_idx], 1.0 - self.config.gaussian_score_prune_ratio)
-        gaussian_assign = torch.logical_or(gs_pos_assign, gs_score_assign)
-        gs_ratios = (gaussian_assign.sum(dim=1) / gaussian_assign.shape[1]).tolist()
-        print("Ratio of gaussians assigned to each cell: {}".format("[" + ", ".join(f"{r:.2f}" for r in gs_ratios) + "]"))
-
         # Save partitions
         self.save_partitions(
             output_path=output_path,
@@ -242,7 +215,6 @@ class PartitionableScene:
             gaussian_model=gaussian_model,
             image_set=image_set,
             camera_assign=camera_assign,
-            gaussian_assign=gaussian_assign,
         )
         # Save pt
         partition_info = {
@@ -251,9 +223,6 @@ class PartitionableScene:
             "campos_assign": campos_assign,
             "camvis_assign": camvis_assign,
             "camera_visibility": cam_vis,
-            "gs_pos_assign": gs_pos_assign,
-            "gs_score": gs_score,
-            "gs_score_assign": gs_score_assign,
         }
         torch.save(partition_info, osp.join(output_path, "partition_info.pt"))
 
@@ -463,25 +432,6 @@ class PartitionableScene:
 
         return cam_vis
 
-    @torch.no_grad()
-    def compute_gaussian_score(
-        self, partition_coords: PartitionCoordinates, camera_assign: torch.Tensor, cameras: Cameras, gaussian_model: VanillaGaussianModel
-    ):
-        n_gaussians = gaussian_model.get_xyz.shape[0]
-        gaussian_score = torch.zeros((len(partition_coords), n_gaussians), device=self.device, dtype=torch.float32)
-
-        for cell_id in range(len(partition_coords)):
-            valid_cam_ids = camera_assign[cell_id].nonzero().squeeze().tolist()
-            for cam_id in tqdm(valid_cam_ids, desc="Computing gaussian score at partition #{}".format(cell_id)):
-                camera = cameras[cam_id].to_device(self.device)
-                outputs = rasterize_importance(viewpoint_camera=camera, pc=gaussian_model)
-                accum_weights = outputs["accum_weights"]  # [N_gaussians]
-                num_hit_pixels = outputs["num_hit_pixels"]  # [N_gaussians]
-                score = accum_weights / num_hit_pixels.float().clamp_min(1e-6)
-                gaussian_score[cell_id] += score
-        gaussian_score = gaussian_score / camera_assign.sum(dim=1, keepdim=True)
-        return gaussian_score
-
     def load_intermediates(self, output_path: str) -> Dict[str, Any]:
         intermediates_path = self.get_intermediates_path(output_path)
         intermediates = {}
@@ -491,8 +441,8 @@ class PartitionableScene:
             intermediates["partition_coords"] = PartitionCoordinates(**data["partition_coords"])
         if osp.exists(osp.join(intermediates_path, "camera_visibility.pt")):
             intermediates["camera_visibility"] = torch.load(osp.join(intermediates_path, "camera_visibility.pt"), map_location=self.device)
-        if osp.exists(osp.join(intermediates_path, "gaussian_score.pt")):
-            intermediates["gaussian_score"] = torch.load(osp.join(intermediates_path, "gaussian_score.pt"), map_location=self.device)
+        # if osp.exists(osp.join(intermediates_path, "gaussian_score.pt")):
+        #     intermediates["gaussian_score"] = torch.load(osp.join(intermediates_path, "gaussian_score.pt"), map_location=self.device)
         return intermediates
 
     def save_partitions(
@@ -503,7 +453,6 @@ class PartitionableScene:
         gaussian_model: VanillaGaussianModel,
         image_set: ImageSet,
         camera_assign: torch.Tensor,
-        gaussian_assign: torch.Tensor,
     ):
         metadata = {}
         metadata["scene"] = {
@@ -560,13 +509,8 @@ class PartitionableScene:
                 for cam_id in valid_cam_ids:
                     f.write(f"{image_set.image_names[cam_id]}\n")
 
-            # Save Gaussian model
-            gs_mask = gaussian_assign[cell_idx]
-            properties = gaussian_model.properties
-            masked_properties = {k: v[gs_mask] for k, v in properties.items()}
-            gaussian_model.properties = masked_properties
-            GaussianPlyUtils.load_from_model(gaussian_model).to_ply_format().save_to_ply(osp.join(cell_dir, "gaussians.ply"))
-            gaussian_model.properties = properties
+        # Save Gaussian model
+        GaussianPlyUtils.load_from_model(gaussian_model).to_ply_format().save_to_ply(osp.join(output_path, "gaussians.ply"))
 
         with open(osp.join(output_path, "metadata.json"), "w") as f:
             json.dump(metadata, f, indent=4, separators=(", ", ": "))

@@ -5,12 +5,14 @@ from typing import Any, List, Optional, Tuple, Union
 import numpy as np
 import open3d as o3d
 import torch
-from diff_gaussian_rasterization import GaussianRasterizationSettings, GaussianRasterizer
+from diff_gaussian_rasterization import (GaussianRasterizationSettings,
+                                         GaussianRasterizer)
 
 from internal.cameras import Camera, Cameras
 from internal.models.mip_splatting import MipSplattingModel
 from internal.models.vanilla_gaussian import VanillaGaussianModel
-from internal.renderers import RendererConfig, RendererOutputInfo, RendererOutputTypes
+from internal.renderers import (RendererConfig, RendererOutputInfo,
+                                RendererOutputTypes)
 from internal.renderers.vanilla_renderer import VanillaRenderer
 from internal.utils.sh_utils import eval_sh
 

@@ -192,10 +192,12 @@ class NVDRRendererMixin:
         mesh_view = Meshes(verts=mesh.verts, faces=mesh.faces[face_mask])
         return mesh_view
 
-    @staticmethod
     def nvdiff_rasterization(
-        camera: Camera, verts: torch.Tensor, faces: torch.Tensor, glctx=None
+        self, camera: Camera, verts: torch.Tensor, faces: torch.Tensor, glctx=None
     ) -> Tuple[RasterizerOutputs, torch.Tensor]:
+        if glctx is None:
+            glctx = self._gl_context
+
         device = verts.device
         width, height = camera.width.item(), camera.height.item()
 

@@ -14,6 +14,7 @@
 #include "forward.h"
 #include <cooperative_groups.h>
 #include <cooperative_groups/reduce.h>
+#include <device_atomic_functions.h>
 namespace cg = cooperative_groups;
 
 // Forward method for converting the input spherical harmonics
@@ -379,9 +380,11 @@ void FORWARD::preprocess(int P, int D, int M, const float *means3D,
 __global__ void __launch_bounds__(BLOCK_X *BLOCK_Y) rasterizeImportanceCUDA(
     const uint2 *__restrict__ ranges, const uint32_t *__restrict__ point_list,
     int W, int H, const float2 *__restrict__ points_xy_image,
-    const float4 *__restrict__ conic_opacity, float *__restrict__ final_T,
+    const float4 *__restrict__ conic_opacity,
+    const float *__restrict__ weightmap, float *__restrict__ final_T,
     uint32_t *__restrict__ n_contrib, float *__restrict__ accum_weights,
-    int *__restrict__ num_hit_pixels, int *__restrict__ num_max_pixels) {
+    float *__restrict__ accum_scaled_weights, int *__restrict__ num_hit_pixels,
+    int *__restrict__ num_max_pixels) {
   // Identify current tile and associated min/max pixel range.
   auto block = cg::this_thread_block();
   uint32_t horizontal_blocks = (W + BLOCK_X - 1) / BLOCK_X;
@@ -392,6 +395,10 @@ __global__ void __launch_bounds__(BLOCK_X *BLOCK_Y) rasterizeImportanceCUDA(
                pix_min.y + block.thread_index().y};
   uint32_t pix_id = W * pix.y + pix.x;
   float2 pixf = {(float)pix.x, (float)pix.y};
+  float pix_weight = -1.0f;
+  if (weightmap != nullptr && pix.x < W && pix.y < H) {
+    pix_weight = weightmap[pix_id];
+  }
 
   // Check if this thread is associated with a valid pixel or outside.
   bool inside = pix.x < W && pix.y < H;
@@ -470,6 +477,10 @@ __global__ void __launch_bounds__(BLOCK_X *BLOCK_Y) rasterizeImportanceCUDA(
       }
       atomicAdd(&(accum_weights[collected_id[j]]), alpha * T);
       atomicAdd(&(num_hit_pixels[collected_id[j]]), 1);
+      if (pix_weight > 0.0f) {
+        atomicAdd(&(accum_scaled_weights[collected_id[j]]),
+                  alpha * T * pix_weight);
+      }
 
       T = test_T;
 
@@ -491,16 +502,16 @@ __global__ void __launch_bounds__(BLOCK_X *BLOCK_Y) rasterizeImportanceCUDA(
   }
 }
 
-void FORWARD::rasterize_importance(const dim3 grid, dim3 block,
-                                   const uint2 *ranges,
-                                   const uint32_t *point_list, int W, int H,
-                                   const float2 *means2D,
-                                   const float4 *conic_opacity, float *final_T,
-                                   uint32_t *n_contrib, float *accum_weights,
-                                   int *num_hit_pixels, int *num_max_pixels) {
+void FORWARD::rasterize_importance(
+    const dim3 grid, dim3 block, const uint2 *ranges,
+    const uint32_t *point_list, int W, int H, const float2 *means2D,
+    const float4 *conic_opacity, const float *weightmap, float *final_T,
+    uint32_t *n_contrib, float *accum_weights, float *accum_scaled_weights,
+    int *num_hit_pixels, int *num_max_pixels) {
   rasterizeImportanceCUDA<<<grid, block>>>(
-      ranges, point_list, W, H, means2D, conic_opacity, final_T, n_contrib,
-      accum_weights, num_hit_pixels, num_max_pixels);
+      ranges, point_list, W, H, means2D, conic_opacity, weightmap, final_T,
+      n_contrib, accum_weights, accum_scaled_weights, num_hit_pixels,
+      num_max_pixels);
 }
 template <int C>
 __global__ void preprocessWithZBufCUDA(

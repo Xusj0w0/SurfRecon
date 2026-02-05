@@ -348,8 +348,9 @@ int CudaRasterizer::Rasterizer::rasterize_importance(
     const float *scales, const float scale_modifier, const float *rotations,
     const float *cov3D_precomp, const float *viewmatrix,
     const float *projmatrix, const float *cam_pos, const float tan_fovx,
-    float tan_fovy, const bool prefiltered, int *radii, float *accum_weights,
-    int *num_hit_pixels, int *num_max_pixels, bool debug) {
+    float tan_fovy, const bool prefiltered, const float *weightmap, int *radii,
+    float *accum_weights, float *accum_scaled_weights, int *num_hit_pixels,
+    int *num_max_pixels, bool debug) {
   const float focal_y = height / (2.0f * tan_fovy);
   const float focal_x = width / (2.0f * tan_fovx);
 
@@ -437,8 +438,9 @@ int CudaRasterizer::Rasterizer::rasterize_importance(
   CHECK_CUDA(FORWARD::rasterize_importance(
                  tile_grid, block, imgState.ranges, binningState.point_list,
                  width, height, geomState.means2D, geomState.conic_opacity,
-                 imgState.accum_alpha, imgState.n_contrib, accum_weights,
-                 num_hit_pixels, num_max_pixels),
+                 weightmap, imgState.accum_alpha, imgState.n_contrib,
+                 accum_weights, accum_scaled_weights, num_hit_pixels,
+                 num_max_pixels),
              debug)
 
   return num_rendered;

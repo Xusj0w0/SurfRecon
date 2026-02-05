@@ -34,7 +34,8 @@ force-exclude = '''
     ^/submodules/*  |
     ^/tests/*       |
     ^/third_party/* |
-    ^/utils/*
+    ^/utils/*       |
+    /eval_tnt/
 )
 '''
 
@@ -47,5 +48,6 @@ skip_glob = [
     "submodules/*", 
     "tests/*", 
     "third_party/*", 
-    "utils/*"
+    "utils/*",
+    "**/eval_tnt/**"
 ]

@@ -65,9 +65,9 @@ class DepthMap:
             )
 
         if depth_map.dtype == np.uint16:
-            depth_map = torch.from_numpy(depth_map.astype(np.float32)) / 65535.
+            depth_map = depth_map.astype(np.float32) / 65535.
         depth_map = depth_map * scale + offset
-        depth_map = torch.clamp_min(depth_map, min=0.)
+        depth_map = torch.clamp_min(torch.from_numpy(depth_map), min=0.)
         return cls(
             depth=depth_map,
         )
@@ -118,6 +118,8 @@ class EstimatedDepthColmapDataParser(ColmapDataParser):
             ).instantiate(self.path, self.output_path, self.global_rank).get_outputs().train_set
         image_name_to_depth_camera = {}
         for name, camera in zip(depth_set.image_names, depth_set.cameras):
+            image_name_to_depth_camera[name] = camera
+        for name, camera in zip(dataparser_outputs.val_set.image_names, dataparser_outputs.val_set.cameras):
             image_name_to_depth_camera[name] = camera
 
         if self.params.depth_rescaling is True:

@@ -57,7 +57,8 @@ public:
       const float *rotations, const float *cov3D_precomp,
       const float *viewmatrix, const float *projmatrix, const float *cam_pos,
       const float tan_fovx, float tan_fovy, const bool prefiltered,
-      int *radii = nullptr, float *accum_weights = nullptr,
+      const float *weightmap, int *radii = nullptr,
+      float *accum_weights = nullptr, float *accum_scaled_weights = nullptr,
       int *num_hit_pixels = nullptr, int *num_max_pixels = nullptr,
       bool debug = false);
 

@@ -27,8 +27,7 @@ def parse_args():
     parser.add_argument("--ckpt_path", "-c", type=str, required=True)
     parser.add_argument("--dataset_path", "-d", type=str, required=True)
     parser.add_argument("--output_dir", "-o", type=str, default="")
-    parser.add_argument("--save_val", action="store_true")
-    parser.add_argument("--skip_efficiency", action="store_true")
+    parser.add_argument("--eval_efficiency", action="store_true")
 
     args = parser.parse_args()
     if not (len(args.output_dir) > 0):
@@ -108,11 +107,9 @@ def main():
         num_workers=6,
     )
 
-    if args.save_val:
-        async_image_saver = AsyncImageSaver(is_rgb=True)
-        image_saver = get_image_saver(async_image_saver, osp.join(args.output_dir, "images"))
-    else:
-        image_saver = lambda batch, outputs: None
+    # Create image saver
+    async_image_saver = AsyncImageSaver(is_rgb=True)
+    image_saver = get_image_saver(async_image_saver, osp.join(args.output_dir, "images"))
 
     # Render
     bg_color = torch.zeros((3,), dtype=torch.float32, device=device)
@@ -124,10 +121,10 @@ def main():
 
         image_saver(batch, outputs)
 
-    if args.save_val:
-        async_image_saver.stop()
+    # Shut down image saver to quit
+    async_image_saver.stop()
 
-    if not args.skip_efficiency:
+    if args.eval_efficiency:
         # Warm up
         cnt = 0
         with tqdm(total=WARM_UP_ITERS, desc="Warming up") as pbar:

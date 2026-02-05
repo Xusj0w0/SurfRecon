@@ -42,8 +42,9 @@ void render(const dim3 grid, dim3 block, const uint2 *ranges,
 void rasterize_importance(const dim3 grid, dim3 block, const uint2 *ranges,
                           const uint32_t *point_list, int W, int H,
                           const float2 *points_xy_image,
-                          const float4 *conic_opacity, float *final_T,
-                          uint32_t *n_contrib, float *accum_weights,
+                          const float4 *conic_opacity, const float *weightmap,
+                          float *final_T, uint32_t *n_contrib,
+                          float *accum_weights, float *accum_scaled_weights,
                           int *num_hit_pixels, int *num_max_pixels);
 
 void preprocess_with_zbuf(

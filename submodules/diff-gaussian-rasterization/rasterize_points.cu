@@ -174,14 +174,15 @@ torch::Tensor markVisible(torch::Tensor &means3D, torch::Tensor &viewmatrix,
 }
 
 std::tuple<int, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor,
-           torch::Tensor, torch::Tensor, torch::Tensor>
+           torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
 RasterizeGaussianImportancesCUDA(
     const torch::Tensor &means3D, const torch::Tensor &opacity,
     const torch::Tensor &scales, const torch::Tensor &rotations,
     const float scale_modifier, const torch::Tensor &cov3D_precomp,
     const torch::Tensor &viewmatrix, const torch::Tensor &projmatrix,
-    const float tan_fovx, const float tan_fovy, const int image_height,
-    const int image_width, const bool prefiltered, const bool debug) {
+    const torch::Tensor &weightmap, const float tan_fovx, const float tan_fovy,
+    const int image_height, const int image_width, const bool prefiltered,
+    const bool debug) {
   if (means3D.ndimension() != 2 || means3D.size(1) != 3) {
     AT_ERROR("means3D must have dimensions (num_points, 3)");
   }
@@ -199,6 +200,7 @@ RasterizeGaussianImportancesCUDA(
       torch::full({P}, 0, means3D.options().dtype(torch::kInt32));
 
   torch::Tensor accum_weights = torch::full({P}, 0, float_opts);
+  torch::Tensor accum_scaled_weights = torch::full({P}, 0, float_opts);
   torch::Tensor num_hit_pixels =
       torch::full({P}, 0, int_opts); // Number of pixels hit by each Gaussian
   torch::Tensor num_max_pixels =
@@ -221,6 +223,13 @@ RasterizeGaussianImportancesCUDA(
     torch::Tensor color = torch::full({P, NUM_CHANNELS}, 0.0, float_opts);
     torch::Tensor campos = torch::full({3}, 0, float_opts);
 
+    const float *wptr = nullptr;
+    if (weightmap.defined() && weightmap.numel() > 0) {
+      if (weightmap.size(0) == H && weightmap.size(1) == W) {
+        wptr = weightmap.contiguous().data<float>();
+      }
+    }
+
     rendered = CudaRasterizer::Rasterizer::rasterize_importance(
         geomFunc, binningFunc, imgFunc, P, 0, M,
         bg.contiguous().data_ptr<float>(), W, H,
@@ -232,13 +241,15 @@ RasterizeGaussianImportancesCUDA(
         viewmatrix.contiguous().data<float>(),
         projmatrix.contiguous().data<float>(),
         campos.contiguous().data<float>(), tan_fovx, tan_fovy, prefiltered,
-        radii.contiguous().data<int>(),
+        wptr, radii.contiguous().data<int>(),
         accum_weights.contiguous().data<float>(),
+        accum_scaled_weights.contiguous().data<float>(),
         num_hit_pixels.contiguous().data<int>(),
         num_max_pixels.contiguous().data<int>(), debug);
   }
   return std::make_tuple(rendered, radii, geomBuffer, binningBuffer, imgBuffer,
-                         accum_weights, num_hit_pixels, num_max_pixels);
+                         accum_weights, accum_scaled_weights, num_hit_pixels,
+                         num_max_pixels);
 }
 
 std::tuple<int, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor,

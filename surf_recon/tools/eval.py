@@ -14,9 +14,15 @@ from PIL import Image
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--render", type=str, required=True)
-    parser.add_argument("--gt", type=str, required=True)
-    parser.add_argument("--output", "-o", type=str, required=True)
-    return parser.parse_args()
+    parser.add_argument("--gt", type=str, default="")
+    parser.add_argument("--output", "-o", type=str, default="")
+
+    args = parser.parse_args()
+    if len(args.gt) == 0:
+        args.gt = osp.join(osp.dirname(args.render), "gt")
+    if len(args.output) == 0:
+        args.output = osp.dirname(osp.dirname(args.render))
+    return args
 
 
 def get_metric_calculator(device):

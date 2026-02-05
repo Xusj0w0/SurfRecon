@@ -10,7 +10,6 @@ from internal.models.vanilla_gaussian import VanillaGaussianModel
 from internal.renderers import RendererOutputInfo, RendererOutputTypes
 
 from ...utils.appearance_model import DecoupledAppearanceModelConfig
-from .importance import ImportanceMixin
 from .nvdr import NVDRRasterizationConfig, NVDRRendererMixin
 from .radegs import RaDeGSRenderer, RaDeGSRendererModule
 
@@ -25,7 +24,7 @@ class MeshBindedRenderer(RaDeGSRenderer):
         return MeshBindedRendererModule(self)
 
 
-class MeshBindedRendererModule(NVDRRendererMixin, RaDeGSRendererModule, ImportanceMixin):
+class MeshBindedRendererModule(NVDRRendererMixin, RaDeGSRendererModule):
     config: MeshBindedRenderer
 
     def forward(self, viewpoint_camera: Camera, pc, bg_color: torch.Tensor = None, render_types: list = None, *args, **kwargs):
@@ -112,10 +111,18 @@ class MeshBindedRendererModule(NVDRRendererMixin, RaDeGSRendererModule, Importan
 
     def before_training_step(self, step, module):
         config = module.metric.config
-        if step > config.dn_start_iter:
-            module.renderer_output_types = ["rgb", "depth", "normal"]
+        if module.renderer_output_types is None:
+            module.renderer_output_types = ["rgb"]
+        if step > config.dn_from_iter:
+            if "depth" not in module.renderer_output_types:
+                module.renderer_output_types.append("depth")
+            if "normal" not in module.renderer_output_types:
+                module.renderer_output_types.append("normal")
         if step > config.mesh_regularization_schedule.start_iter:
-            module.renderer_output_types = ["rgb", "depth", "normal", "mesh_depth", "mesh_normal"]
+            if "mesh_depth" not in module.renderer_output_types:
+                module.renderer_output_types.append("mesh_depth")
+            if "mesh_normal" not in module.renderer_output_types:
+                module.renderer_output_types.append("mesh_normal")
             module.gaussian_model.extract_mesh()
 
         return super().before_training_step(step, module)
