@@ -40,6 +40,12 @@ def parse_args():
 def load_model_and_renderer(ckpt: dict, device):
     sh_degree = int(ckpt["state_dict"]["gaussian_model._active_sh_degree"])
     model_state_dict = GaussianModelLoader.filter_state_dict_by_prefix(ckpt["state_dict"], "gaussian_model.")
+    keys_to_remove = []
+    for key in model_state_dict.keys():
+        if key.startswith("tetrahedra."):
+            keys_to_remove.append(key)
+    for key in keys_to_remove:
+        del model_state_dict[key]
     model = VanillaGaussian(sh_degree=sh_degree).instantiate()
     model.setup_from_number(model_state_dict["gaussians.means"].shape[0])
     model.load_state_dict(model_state_dict)

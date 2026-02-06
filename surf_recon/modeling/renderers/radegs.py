@@ -106,6 +106,7 @@ def rasterize_radegs(
     (
         rendered_image,
         radii,
+        num_hit_pixels,
         rendered_expected_coord,
         rendered_median_coord,
         rendered_expected_depth,
@@ -134,6 +135,7 @@ def rasterize_radegs(
         "viewspace_points": means2D,
         "visibility_filter": radii > 0,
         "radii": radii,
+        "num_hit_pixels": num_hit_pixels,
     }
 
 

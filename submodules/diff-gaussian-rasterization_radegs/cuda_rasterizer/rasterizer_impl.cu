@@ -280,6 +280,7 @@ int CudaRasterizer::Rasterizer::forward(
 	float* out_alpha,
 	float* out_normal,
 	int* radii,
+	int* num_hit_pixels,
 	bool require_coord,
 	bool require_depth,
 	bool debug
@@ -415,6 +416,7 @@ int CudaRasterizer::Rasterizer::forward(
 		out_normal,
 		out_depth,
 		out_mdepth,
+		num_hit_pixels,
 		imgState.accum_coord,
 		imgState.accum_depth,
 		imgState.normal_length,

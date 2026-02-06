@@ -2,7 +2,7 @@ max_steps: 30_000
 save_iterations: [15_000, 30_000]
 
 data:
-  path: data/GauU_Scene/SMBU
+  path: data/GauU_Scene/LFLS
   parser:
     class_path: internal.dataparsers.Colmap
     init_args:
@@ -14,6 +14,7 @@ data:
   async_caching: true
 
 model:
+  renderer_output_types: [rgb, depth, normal]
   gaussian:
     class_path: surf_recon.modeling.mesh_gaussian.MeshGaussian
     init_args:

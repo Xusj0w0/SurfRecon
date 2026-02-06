@@ -12,7 +12,7 @@ data:
       eval_image_select_mode: list
       eval_list: data/MatrixCity/street/val_images.txt
   train_max_num_images_to_cache: 256
-  num_workers: 4
+  num_workers: 6
   async_caching: true
 
 model:
@@ -22,7 +22,8 @@ model:
     class_path: internal.models.vanilla_gaussian.VanillaGaussian
     init_args:
       optimization:
-        scales_lr: 1e-3
+        optimizer:
+          class_path: surf_recon.modeling.selective_adam.SelectiveAdam
         means_lr_init: 1.6e-5
         means_lr_scheduler:
           lr_final: 1.6e-6
@@ -36,8 +37,8 @@ model:
   density:
     class_path: surf_recon.modeling.density_controllers.TrimDensityController
     init_args:
-      densify_grad_threshold: 1e-5
-      densify_from_iter: 1_000
+      densify_grad_threshold: 2e-5
+      densify_from_iter: 4_000
       densification_interval: 1000
       opacity_reset_interval: 60_000
       densify_until_iter: 30_000

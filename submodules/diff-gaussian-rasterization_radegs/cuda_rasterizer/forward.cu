@@ -450,6 +450,7 @@ renderCUDA(
 	float* __restrict__ out_normal,
 	float* __restrict__ out_depth,
 	float* __restrict__ out_mdepth,
+	int* __restrict__ num_hit_pixels,
 	float* __restrict__ accum_coord,
 	float* __restrict__ accum_depth,
 	float* __restrict__ normal_length
@@ -571,6 +572,9 @@ renderCUDA(
 				done = true;
 				continue;
 			}
+
+			// accumulate num_hit_pixels
+			atomicAdd(&(num_hit_pixels[collected_id[j]]), 1);
 
 			const float aT = alpha * T;
 			// Eq. (3) from 3D Gaussian splatting paper.
@@ -716,6 +720,7 @@ void FORWARD::render(
 	float* out_normal,
 	float* out_depth,
 	float* out_mdepth,
+	int* num_hit_pixels,
 	float* accum_coord,
 	float* accum_depth,
 	float* normal_length,
@@ -727,7 +732,7 @@ renderCUDA<NUM_CHANNELS, template_coord, template_depth, template_normal> <<<gri
 	ranges, point_list, W, H, view_points, means2D, colors, ts, camera_planes, ray_planes, \
 	normals, conic_opacity, focal_x, focal_y, out_alpha, n_contrib, bg_color, out_color, \
 	out_coord, out_mcoord, out_normal, out_depth, out_mdepth, \
-	accum_coord, accum_depth, normal_length)
+	num_hit_pixels, accum_coord, accum_depth, normal_length)
 
 	if (require_coord && require_depth)
 		RENDER_CUDA_CALL(true, true, true);

@@ -16,7 +16,8 @@ from internal.models.vanilla_gaussian import \
     OptimizationConfig as VanillaOptimizationConfig
 from internal.models.vanilla_gaussian import (VanillaGaussian,
                                               VanillaGaussianModel)
-from internal.optimizers import Adam, OptimizerConfig, SparseGaussianAdam
+from internal.optimizers import (Adam, OptimizerConfig, SelectiveAdam,
+                                 SparseGaussianAdam)
 from internal.schedulers import ExponentialDecayScheduler, Scheduler
 from internal.utils.general_utils import build_rotation, inverse_sigmoid
 
@@ -444,9 +445,7 @@ class MeshGaussianUtils:
             if sampling_method == "random":
                 return torch.randperm(n_gaussians, device=gaussian_model.get_xyz.device)[:n_samples]
             else:
-                return cls.sample_surface_gaussians(
-                    n_samples=n_samples, gaussian_model=gaussian_model, renderer=renderer, train_cameras=train_cameras
-                )
+                return cls.sample_surface_gaussians(n_samples=n_samples, gaussian_model=gaussian_model, train_cameras=train_cameras)
 
     @staticmethod
     def compute_tetra_vertices(
@@ -614,7 +613,6 @@ class MeshGaussianUtils:
         cls,
         n_samples: int,
         gaussian_model: MeshMixin,
-        renderer: RaDeGSRendererModule,
         train_cameras: Cameras,
     ):
         n_gaussians, device = gaussian_model.get_xyz.shape[0], gaussian_model.get_xyz.device

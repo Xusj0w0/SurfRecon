@@ -80,6 +80,7 @@ namespace FORWARD
 		float* out_normal,
 		float* out_depth,
 		float* out_mdepth,
+		int* num_hit_pixels,
 		float* accum_coord,
 		float* accum_depth,
 		float* normal_length,
