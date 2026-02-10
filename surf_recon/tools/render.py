@@ -51,7 +51,15 @@ def load_from_ckpt(args, device):
 
 
 def get_image_saver(async_image_saver, output_dir: str):
-    for d in ["render", "gt", "montage", "depth_expected", "depth_median", "normal_world", "normal_view"]:
+    for d in [
+        "render",
+        "gt",
+        "montage",
+        "depth_expected",
+        "depth_median",
+        "normal_world",
+        "normal_view",
+    ]:
         os.makedirs(osp.join(output_dir, d), exist_ok=True)
 
     def tensor2numpy(image: torch.Tensor):
@@ -79,7 +87,10 @@ def get_image_saver(async_image_saver, output_dir: str):
         async_image_saver.save(render, osp.join(output_dir, "render/{}.png".format(image_name)))
         async_image_saver.save(gt, osp.join(output_dir, "gt/{}.png".format(image_name)))
         async_image_saver.save(montage, osp.join(output_dir, "montage/{}.png".format(image_name)))
-        async_image_saver.save(depth_expected, osp.join(output_dir, "depth_expected/{}.png".format(image_name)))
+        async_image_saver.save(
+            depth_expected,
+            osp.join(output_dir, "depth_expected/{}.png".format(image_name)),
+        )
         async_image_saver.save(depth_median, osp.join(output_dir, "depth_median/{}.png".format(image_name)))
         async_image_saver.save(normal_view, osp.join(output_dir, "normal_view/{}.png".format(image_name)))
         async_image_saver.save(normal_world, osp.join(output_dir, "normal_world/{}.png".format(image_name)))
@@ -131,7 +142,12 @@ def main():
             for batch in dataloader:
                 camera, (name, image, mask), extra = batch
                 image = image.to(device)
-                outputs = renderer(camera, gaussian_model, torch.zeros((3,)).to(image), render_types=["rgb"])
+                outputs = renderer(
+                    camera,
+                    gaussian_model,
+                    torch.zeros((3,)).to(image),
+                    render_types=["rgb"],
+                )
                 pbar.update(1)
                 cnt += 1
                 if cnt >= WARM_UP_ITERS:

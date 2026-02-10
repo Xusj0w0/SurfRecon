@@ -9,6 +9,10 @@ from internal.cameras import Camera, Cameras
 from internal.metrics.vanilla_metrics import VanillaMetrics, VanillaMetricsImpl
 from internal.utils.visualizers import Visualizers
 
+from ...utils.graphic_utils import depth_to_normal, fix_normal_map
+from .depth_reg import (DepthRegularizedMetricMixin,
+                        DepthRegularizedMetricMixinImpl)
+
 
 @dataclass
 class MeshRegularizationSchedule:
@@ -79,7 +83,12 @@ class MeshRegularizedMetricsImpl(VanillaMetricsImpl):
         else:
             loss = (1.0 - self.lambda_dssim) * rgb_diff_loss + self.lambda_dssim * (1.0 - ssim_metric)
             rgb_diff_loss_aug = torch.tensor(0.0).to(loss)
-        metrics = {"loss": loss, "rgb_diff": rgb_diff_loss, "ssim": ssim_metric, "rgb_diff_aug": rgb_diff_loss_aug}
+        metrics = {
+            "loss": loss,
+            "rgb_diff": rgb_diff_loss,
+            "ssim": ssim_metric,
+            "rgb_diff_aug": rgb_diff_loss_aug,
+        }
         pbar = {"loss": True, "rgb_diff": True, "ssim": True, "rgb_diff_aug": True}
 
         # mesh metrics
@@ -95,7 +104,12 @@ class MeshRegularizedMetricsImpl(VanillaMetricsImpl):
         rgb_diff_loss, ssim_metric, rgb_diff_loss_aug = self._compute_basic_metrics(batch, outputs)
         loss = (1.0 - self.lambda_dssim) * rgb_diff_loss + self.lambda_dssim * (1.0 - ssim_metric)
         rgb_diff_loss_aug = torch.tensor(0.0).to(loss)
-        metrics = {"loss": loss, "rgb_diff": rgb_diff_loss, "ssim": ssim_metric, "rgb_diff_aug": rgb_diff_loss_aug}
+        metrics = {
+            "loss": loss,
+            "rgb_diff": rgb_diff_loss,
+            "ssim": ssim_metric,
+            "rgb_diff_aug": rgb_diff_loss_aug,
+        }
         pbar = {"loss": True, "rgb_diff": True, "ssim": True, "rgb_diff_aug": False}
 
         # mesh metrics
@@ -160,9 +174,9 @@ class MeshRegularizedMetricsImpl(VanillaMetricsImpl):
             and all(m is not None for m in [depth_median, depth_expected, normal])
         ):
             if normal_from_median_depth is None:
-                normal_from_median_depth = self.depth_to_normal(depth_median, camera)
+                normal_from_median_depth = depth_to_normal(depth_median, camera)
             if normal_from_expected_depth is None:
-                normal_from_expected_depth = self.depth_to_normal(depth_expected, camera)
+                normal_from_expected_depth = depth_to_normal(depth_expected, camera)
             error_map_median = 1.0 - (normal * normal_from_median_depth).sum(0)
             error_map_expected = 1.0 - (normal * normal_from_expected_depth).sum(0)
             ratio = 0.6
@@ -208,9 +222,9 @@ class MeshRegularizedMetricsImpl(VanillaMetricsImpl):
                 )  # (3, H, W) in camera coordinate
                 # Compute normal_gaussian by fusing normal_from_median_depth and normal_from_expected_depth
                 if normal_from_median_depth is None:
-                    normal_from_median_depth = self.depth_to_normal(depth_median, camera)
+                    normal_from_median_depth = depth_to_normal(depth_median, camera)
                 if normal_from_expected_depth is None:
-                    normal_from_expected_depth = self.depth_to_normal(depth_expected, camera)
+                    normal_from_expected_depth = depth_to_normal(depth_expected, camera)
                 if normal_gaussian is None:
                     normal_gaussian = (
                         self.config.median_fusing_ratio * normal_from_median_depth
@@ -267,7 +281,16 @@ class MeshRegularizedMetricsImpl(VanillaMetricsImpl):
 
     @classmethod
     @torch.no_grad()
-    def _log_rendered_results(cls, outputs, batch, gaussian_model, global_step, pl_module: lightning.LightningModule, metrics, prog_bar):
+    def _log_rendered_results(
+        cls,
+        outputs,
+        batch,
+        gaussian_model,
+        global_step,
+        pl_module: lightning.LightningModule,
+        metrics,
+        prog_bar,
+    ):
         if global_step % 1000 == 0:
             camera, image_info, _ = batch
             image_name, gt_image, masked_pixels = image_info
@@ -284,9 +307,11 @@ class MeshRegularizedMetricsImpl(VanillaMetricsImpl):
                 median_depth = cls.depth2invdepth(median_depth)
                 mesh_depth = cls.depth2invdepth(mesh_depth)
                 mesh_normal = torch.einsum(
-                    "i j, i h w -> j h w", camera.world_to_camera[:3, :3], outputs["mesh_normal"]
+                    "i j, i h w -> j h w",
+                    camera.world_to_camera[:3, :3],
+                    outputs["mesh_normal"],
                 )  # (3, H, W) in camera coordinate
-                mesh_normal = (1.0 - cls.fix_normal_map(camera, mesh_normal)) / 2.0
+                mesh_normal = (1.0 - fix_normal_map(camera, mesh_normal)) / 2.0
                 img = torch.cat(
                     [
                         torch.cat([render, median_depth, normal], dim=-1),
@@ -300,68 +325,6 @@ class MeshRegularizedMetricsImpl(VanillaMetricsImpl):
 
             pl_module.log_image("Rendered", img)
 
-    @classmethod
-    def depth_to_normal(cls, depth: torch.Tensor, camera: Camera):
-        """
-        Convert depth map to normal map in camera coordinate.
-
-        Args:
-            depth (Tensor (1, H, W)): depth map
-            camera: Camera
-
-        Returns:
-            normal (Tensor, (3, H, W)): normal map
-        """
-        pointmap = cls.depth_to_pointmap(depth=depth, camera=camera)
-        normal = cls.pointmap_to_normal(pointmap=pointmap)
-        return normal
-
-    @classmethod
-    def depth_to_pointmap(cls, depth: torch.Tensor, camera: Camera):
-        """
-        Convert depth map to point map in camera coordinate.
-
-        Args:
-            depth (Tensor (1, H, W)): depth map
-            camera: Camera
-
-        Returns:
-            pointmap (Tensor, (3, H, W)): point map
-        """
-        H, W = depth.shape[-2:]
-        assert camera.height.item() == H and camera.width.item() == W
-
-        intrins_inv = torch.tensor(
-            [
-                [1 / camera.fx, 0.0, -camera.width / (2 * camera.fx)],
-                [0.0, 1 / camera.fy, -camera.height / (2 * camera.fy)],
-                [0.0, 0.0, 1.0],
-            ]
-        ).to(depth)
-        grid_x, grid_y = torch.meshgrid(torch.arange(W) + 0.5, torch.arange(H) + 0.5, indexing="xy")
-        points = torch.stack([grid_x, grid_y, torch.ones_like(grid_x)], dim=0).to(intrins_inv).reshape(3, -1)
-        rays_d = intrins_inv @ points
-        pointmap = depth.reshape(1, -1) * rays_d
-        return pointmap.reshape(3, H, W)
-
-    @classmethod
-    def pointmap_to_normal(cls, pointmap: torch.Tensor):
-        """
-        Convert point map to normal map in camera coordinate.
-
-        Args:
-            pointmap (Tensor (3, H, W)): point map
-            camera: Camera
-
-        Returns:
-            normal (Tensor, (3, H, W)): normal
-        """
-        normal = pointmap.new_zeros(pointmap.shape)
-        dx = pointmap[..., 2:, 1:-1] - pointmap[..., :-2, 1:-1]
-        dy = pointmap[..., 1:-1, 2:] - pointmap[..., 1:-1, :-2]
-        normal[..., 1:-1, 1:-1] = F.normalize(torch.cross(dx, dy, dim=0), dim=0)
-        return normal
-
     @staticmethod
     def depth2invdepth(depth: torch.Tensor):
         invdepth = 1.0 / depth.clamp_min(1e-6)
@@ -369,28 +332,34 @@ class MeshRegularizedMetricsImpl(VanillaMetricsImpl):
         invdepth = Visualizers.float_colormap(invdepth, "inferno")
         return invdepth
 
-    @staticmethod
-    def fix_normal_map(view: Camera, normal: torch.Tensor, normal_in_view_space=True):
-        W, H = view.width.item(), view.height.item()
-        intrins_inv = torch.linalg.inv(view.get_K()[:3, :3])
-        grid_x, grid_y = torch.meshgrid(torch.arange(W) + 0.5, torch.arange(H) + 0.5, indexing="xy")
-        points = torch.stack([grid_x, grid_y, torch.ones_like(grid_x)], dim=0).reshape(3, -1).to(normal)
-        rays_d = (intrins_inv @ points).reshape(3, H, W)
 
-        if normal_in_view_space:
-            normal_view = normal
-        else:
-            normal_view = normal.clone()
-            if normal.shape[0] == 3:
-                normal_view = normal_view.permute(1, 2, 0)
-            normal_view = normal_view @ view.world_to_camera[:3, :3]
-            if normal.shape[0] == 3:
-                normal_view = normal_view.permute(2, 0, 1)
+@dataclass
+class DepthMeshRegularizedMetrics(DepthRegularizedMetricMixin, MeshRegularizedMetrics):
+    # depth_normalized: bool = field(default=True)
 
-        if normal_view.shape[0] != 3:
-            rays_d = rays_d.permute(1, 2, 0)
-            dim_to_sum = -1
-        else:
-            dim_to_sum = 0
+    def instantiate(self, *args, **kwargs):
+        return DepthMeshRegularizedMetricsImpl(self)
 
-        return torch.sign((-rays_d * normal_view).sum(dim=dim_to_sum, keepdim=True)) * normal_view
+
+class DepthMeshRegularizedMetricsImpl(DepthRegularizedMetricMixinImpl, MeshRegularizedMetricsImpl):
+    config: DepthMeshRegularizedMetrics
+
+    def get_train_metrics(self, pl_module, gaussian_model, step, batch, outputs):
+        metrics, pbar = super().get_train_metrics(pl_module, gaussian_model, step, batch, outputs)
+
+        d_reg_weight = self.get_dreg_weight(step)
+        dreg = self.get_depth_metric(batch, outputs)
+        metrics["depth_reg"] = dreg
+        pbar["depth_reg"] = True
+        metrics["loss"] += d_reg_weight * dreg
+        return metrics, pbar
+
+    def get_validate_metrics(self, pl_module, gaussian_model, batch, outputs):
+        metrics, pbar = super().get_validate_metrics(pl_module, gaussian_model, batch, outputs)
+
+        d_reg_weight = self.get_dreg_weight(pl_module.trainer.global_step)
+        dreg = self.get_depth_metric(batch, outputs)
+        metrics["depth_reg"] = dreg
+        pbar["depth_reg"] = True
+        metrics["loss"] += d_reg_weight * dreg
+        return metrics, pbar

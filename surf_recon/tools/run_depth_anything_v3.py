@@ -91,7 +91,11 @@ def store_depth_and_set_scale(depth, image_name, output_dir, image_saver, depth_
         # apply colormap
         min_depth = depth.min()
         normalized_depth = (depth - min_depth) / (max_depth - min_depth)
-        depth_colored_saver.save(normalized_depth, osp.join(output_dir, "{}.preview.png".format(image_name)), processor=apply_color_map)
+        depth_colored_saver.save(
+            normalized_depth,
+            osp.join(output_dir, "{}.preview.png".format(image_name)),
+            processor=apply_color_map,
+        )
 
 
 def main():
@@ -143,7 +147,12 @@ def main():
 
     t = tqdm(total=n_images)
     try:
-        for image_names, image_files, extrinsics, intrinsics in image_data_group_by_camera_id.values():
+        for (
+            image_names,
+            image_files,
+            extrinsics,
+            intrinsics,
+        ) in image_data_group_by_camera_id.values():
             for i in range(0, len(image_names), batch_size):
                 slice_end = i + batch_size
                 prediction = None
@@ -173,7 +182,10 @@ def main():
                         colmap_camera = colmap_cameras[colmap_images[image_name_to_id[image_name]].camera_id]
                         depth = torch.from_numpy(depth)
                         depth = torch.nn.functional.interpolate(
-                            depth[None, None], size=(colmap_camera.height, colmap_camera.width), mode="bilinear", align_corners=True
+                            depth[None, None],
+                            size=(colmap_camera.height, colmap_camera.width),
+                            mode="bilinear",
+                            align_corners=True,
                         )[0, 0]
                         depth = depth.cpu().numpy()
                     inverse_depth = 1.0 / depth

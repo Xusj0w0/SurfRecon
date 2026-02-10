@@ -1,3 +1,4 @@
+import os.path as osp
 from dataclasses import dataclass, field
 from typing import List
 
@@ -10,13 +11,12 @@ from internal.models.mip_splatting import (MipSplattingModelMixin,
                                            MipSplattingUtils)
 from internal.models.vanilla_gaussian import VanillaGaussianModel
 
-from .trim_density_controller import _get_trimming_prune_mask
+from .trim_density_controller import (TrimDensityControllerImplMixin,
+                                      TrimDensityControllerMixin)
 
 
 @dataclass
-class MeshGaussianDensityController(VanillaDensityController):
-    start_trim_top_k: int = 5
-
+class MeshGaussianDensityController(VanillaDensityController, TrimDensityControllerMixin):
     start_trim_ratio: float = 0.5
 
     cull_opacity_threshold: float = field(default=0.05)
@@ -25,17 +25,23 @@ class MeshGaussianDensityController(VanillaDensityController):
         return MeshGaussianDensityControllerImpl(self)
 
 
-class MeshGaussianDensityControllerImpl(VanillaDensityControllerImpl):
+class MeshGaussianDensityControllerImpl(VanillaDensityControllerImpl, TrimDensityControllerImplMixin):
     config: MeshGaussianDensityController
 
     def setup(self, stage: str, pl_module) -> None:
         super().setup(stage, pl_module)
 
         def _trim_on_train_start(gaussian_model, module):
+            initialize_from = module.hparams.get("initialize_from", None)
+            if initialize_from is None or not osp.exists(initialize_from):
+                return
             cameras = module.trainer.datamodule.dataparser_outputs.train_set.cameras
             optimizers = self._exclude_occupancy_optimizer(module.trainer.optimizers)
-            prune_mask = _get_trimming_prune_mask(
-                cameras, gaussian_model, top_k=self.config.start_trim_top_k, ratio=self.config.start_trim_ratio
+            prune_mask = self._get_trimming_prune_mask(
+                cameras,
+                gaussian_model,
+                top_k=self.config.top_k,
+                ratio=self.config.start_trim_ratio,
             )
             self._prune_points(prune_mask, gaussian_model, optimizers)
             torch.cuda.empty_cache()
@@ -44,22 +50,52 @@ class MeshGaussianDensityControllerImpl(VanillaDensityControllerImpl):
 
     def after_backward(self, outputs, batch, gaussian_model, optimizers, global_step, pl_module):
         _optimizers = self._exclude_occupancy_optimizer(optimizers)
-        super().after_backward(outputs, batch, gaussian_model, _optimizers, global_step, pl_module)
+        self._n_gaussians_prev = gaussian_model.n_gaussians
 
-        self._recompute_3d_filter(gaussian_model, _optimizers, global_step, pl_module)
+        if global_step >= self.config.densify_until_iter:
+            return
 
-    def _recompute_3d_filter(self, gaussian_model, optimizers, global_step, pl_module):
+        with torch.no_grad():
+            self.update_states(outputs)
+            gaussian_changed = False
+
+            # trim before resetting opacity
+            if global_step > self.config.trim_from_iter and global_step % self.config.trim_interval == 0:
+                cameras = pl_module.trainer.datamodule.dataparser_outputs.train_set.cameras
+                prune_mask = self._get_trimming_prune_mask(
+                    cameras=cameras,
+                    gaussian_model=gaussian_model,
+                    top_k=self.config.top_k,
+                    ratio=self.config.trim_ratio,
+                )
+                self._prune_points(prune_mask, gaussian_model, _optimizers)
+                gaussian_changed = True
+
+            # densify and pruning
+            if global_step > self.config.densify_from_iter and global_step % self.config.densification_interval == 0:
+                size_threshold = 20 if global_step > self.config.opacity_reset_interval else None
+                self._densify_and_prune(
+                    max_screen_size=size_threshold,
+                    gaussian_model=gaussian_model,
+                    optimizers=_optimizers,
+                )
+                gaussian_changed = True
+
+            if global_step % self.config.opacity_reset_interval == 0 or (
+                torch.all(pl_module.background_color == 1.0) and global_step == self.config.densify_from_iter
+            ):
+                self._reset_opacities(gaussian_model, _optimizers)
+                self.opacity_reset_at = global_step
+
+            if gaussian_changed:
+                self._recompute_3d_filter(gaussian_model)
+
+    def _recompute_3d_filter(self, gaussian_model):
         if not MipSplattingModelMixin._filter_3d_name in gaussian_model.get_property_names():
             return
 
-        # densify step
-        if (
-            global_step < self.config.densify_until_iter
-            and global_step > self.config.densify_from_iter
-            and global_step % self.config.densification_interval == 0
-        ):
-            gaussian_model.compute_3d_filter()
-            torch.cuda.empty_cache()
+        gaussian_model.compute_3d_filter()
+        torch.cuda.empty_cache()
 
     def _init_state(self, n_gaussians: int, device):
         super()._init_state(n_gaussians=n_gaussians, device=device)
@@ -131,8 +167,8 @@ class MeshGaussianDensityControllerImpl(VanillaDensityControllerImpl):
         percent_dense = self.config.percent_dense
         scene_extent = self.cameras_extent
 
-        ratio = (torch.norm(grads, dim=-1) >= self.config.densify_grad_threshold).float().mean()
-        grad_abs_threshold = torch.quantile(grads_abs.reshape(-1), 1 - ratio)
+        ratio = (torch.norm(grads[: self._n_gaussians_prev], dim=-1) >= self.config.densify_grad_threshold).float().mean()
+        grad_abs_threshold = torch.quantile(grads_abs[: self._n_gaussians_prev].reshape(-1), 1 - ratio)
 
         # Extract points that satisfy the gradient condition
         selected_pts_mask = torch.where(torch.norm(grads, dim=-1) >= grad_threshold, True, False)
@@ -163,8 +199,8 @@ class MeshGaussianDensityControllerImpl(VanillaDensityControllerImpl):
         percent_dense = self.config.percent_dense
         scene_extent = self.cameras_extent
 
-        ratio = (torch.norm(grads, dim=-1) >= self.config.densify_grad_threshold).float().mean()
-        grad_abs_threshold = torch.quantile(grads_abs.reshape(-1), 1 - ratio)
+        ratio = (torch.norm(grads[: self._n_gaussians_prev], dim=-1) >= self.config.densify_grad_threshold).float().mean()
+        grad_abs_threshold = torch.quantile(grads_abs[: self._n_gaussians_prev].reshape(-1), 1 - ratio)
 
         device = gaussian_model.get_property("means").device
         n_init_points = gaussian_model.n_gaussians
@@ -207,11 +243,16 @@ class MeshGaussianDensityControllerImpl(VanillaDensityControllerImpl):
         self.xyz_gradient_accum_abs = self.xyz_gradient_accum_abs[valid_points_mask]
         self.xyz_gradient_accum_abs_max = self.xyz_gradient_accum_abs_max[valid_points_mask]
 
-    def _reset_opacities(self, gaussian_model: VanillaGaussianModel, optimizers: List[torch.optim.Optimizer]):
+    def _reset_opacities(
+        self,
+        gaussian_model: VanillaGaussianModel,
+        optimizers: List[torch.optim.Optimizer],
+    ):
         if MipSplattingModelMixin._filter_3d_name in gaussian_model.get_property_names():
             current_opacity_with_filter, _ = gaussian_model.get_3d_filtered_scales_and_opacities()
             opacities_new = torch.min(
-                current_opacity_with_filter, torch.ones_like(current_opacity_with_filter) * self.config.opacity_reset_value
+                current_opacity_with_filter,
+                torch.ones_like(current_opacity_with_filter) * self.config.opacity_reset_value,
             )
             _, compensation = MipSplattingUtils.apply_3d_filter_on_scales(
                 filter_3d=gaussian_model.get_3d_filter(),

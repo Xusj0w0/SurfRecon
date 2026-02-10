@@ -8,7 +8,12 @@ class Meshes:
     Meshes class for storing meshes parameters.
     """
 
-    def __init__(self, verts: torch.Tensor, faces: torch.Tensor, verts_colors: Optional[torch.Tensor] = None):
+    def __init__(
+        self,
+        verts: torch.Tensor,
+        faces: torch.Tensor,
+        verts_colors: Optional[torch.Tensor] = None,
+    ):
         super().__init__()
         assert verts_colors is None or verts_colors.shape[0] == verts.shape[0]
         self.verts = verts
@@ -18,7 +23,11 @@ class Meshes:
     @property
     def face_normals(self):
         faces_verts = self.verts[self.faces]
-        faces_verts_normals = torch.cross(faces_verts[:, 1] - faces_verts[:, 0], faces_verts[:, 2] - faces_verts[:, 0], dim=-1)
+        faces_verts_normals = torch.cross(
+            faces_verts[:, 1] - faces_verts[:, 0],
+            faces_verts[:, 2] - faces_verts[:, 0],
+            dim=-1,
+        )
         faces_verts_normals = torch.nn.functional.normalize(faces_verts_normals, dim=-1)
         return faces_verts_normals
 

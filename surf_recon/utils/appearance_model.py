@@ -58,14 +58,23 @@ class DecoupledAppearanceModel(nn.Module):
 
             if self.config.n_appearances > 0:
                 self.embedding = nn.Embedding(self.config.n_appearances, self.config.n_appearance_embedding_dims)
-                self.appearance_network = AppearanceNetwork(self.config.n_appearance_embedding_dims + 3, self.config.num_output_channels)
+                self.appearance_network = AppearanceNetwork(
+                    self.config.n_appearance_embedding_dims + 3,
+                    self.config.num_output_channels,
+                )
                 self.embedding.weight.data.normal_(0, 1e-4)
 
     def forward(self, rendered: torch.Tensor, appearance_id: torch.Tensor):
         appearance_embedding = self.embedding(appearance_id)
         h, w = list(rendered.shape[-2:])
         crop_image_down = torch.nn.functional.interpolate(rendered, size=(h // 32, w // 32), mode="bilinear", align_corners=True)
-        net_input = torch.cat([crop_image_down, appearance_embedding[..., None, None].repeat(1, 1, h // 32, w // 32)], dim=1)
+        net_input = torch.cat(
+            [
+                crop_image_down,
+                appearance_embedding[..., None, None].repeat(1, 1, h // 32, w // 32),
+            ],
+            dim=1,
+        )
 
         return self.appearance_network(net_input, h, w) * rendered
 
@@ -92,7 +101,10 @@ class DecoupledAppearanceModel(nn.Module):
             warm_up=self.config.optimization.warm_up,
         )
 
-        return [embedding_optimizer, network_optimizer], [embedding_scheduler, network_scheduler]
+        return [embedding_optimizer, network_optimizer], [
+            embedding_scheduler,
+            network_scheduler,
+        ]
 
     @staticmethod
     def _create_optimizer_and_scheduler(params, name, lr_init, lr_final_factor, max_steps, eps, warm_up):
@@ -117,7 +129,13 @@ def decouple_appearance(image, gaussians, view_idx):
     # down sample the image
     crop_image_down = torch.nn.functional.interpolate(image[None], size=(H // 32, W // 32), mode="bilinear", align_corners=True)[0]
 
-    crop_image_down = torch.cat([crop_image_down, appearance_embedding[None].repeat(H // 32, W // 32, 1).permute(2, 0, 1)], dim=0)[None]
+    crop_image_down = torch.cat(
+        [
+            crop_image_down,
+            appearance_embedding[None].repeat(H // 32, W // 32, 1).permute(2, 0, 1),
+        ],
+        dim=0,
+    )[None]
     mapping_image = gaussians.appearance_network(crop_image_down, H, W).squeeze()
     transformed_image = mapping_image * image
 

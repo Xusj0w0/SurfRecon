@@ -180,17 +180,26 @@ class PartitionableScene:
 
         # Save intermediate results
         intermediates_path = osp.join(self.get_intermediates_path(output_path), "scene_division.pt")
-        torch.save({"scene_bbox": asdict(scene_bbox), "partition_coords": asdict(partition_coords)}, intermediates_path)
+        torch.save(
+            {
+                "scene_bbox": asdict(scene_bbox),
+                "partition_coords": asdict(partition_coords),
+            },
+            intermediates_path,
+        )
 
         # Camera position based assignment
         campos_assign = self.is_in_bboxes(
-            partition_coords.get_bounding_boxes(enlarge=self.config.bbox_enlarge_by_campos), campos_transformed
+            partition_coords.get_bounding_boxes(enlarge=self.config.bbox_enlarge_by_campos),
+            campos_transformed,
         )  # [N_partitions, N_cameras]
         # Camera visibility based assignment
         cam_vis = intermediates.get("camera_visibility", None)
         if cam_vis is None:
             cam_vis = self.compute_camera_visibility(
-                partition_coords=partition_coords, cameras=image_set.cameras, gaussian_model=gaussian_model
+                partition_coords=partition_coords,
+                cameras=image_set.cameras,
+                gaussian_model=gaussian_model,
             )
             # Save intermediate results
             intermediates_path = osp.join(self.get_intermediates_path(output_path), "camera_visibility.pt")
@@ -202,7 +211,13 @@ class PartitionableScene:
         # Plot camera assignment
         for cell_idx in range(len(partition_coords)):
             cell_objs = self.plot_cell(ax, cell_idx, partition_coords, campos_transformed, camera_assign)
-            fig.savefig(osp.join(self.get_figures_dir(output_path), "{}.png".format(self.get_cell_name(cell_idx))), dpi=300)
+            fig.savefig(
+                osp.join(
+                    self.get_figures_dir(output_path),
+                    "{}.png".format(self.get_cell_name(cell_idx)),
+                ),
+                dpi=300,
+            )
             for obj in cell_objs:
                 obj.remove()
         plt.close(fig)
@@ -226,7 +241,9 @@ class PartitionableScene:
         }
         torch.save(partition_info, osp.join(output_path, "partition_info.pt"))
 
-    def load_scene(self) -> Tuple[VanillaGaussianModel, VanillaRenderer, Dict[str, Any], DataParserOutputs]:
+    def load_scene(
+        self,
+    ) -> Tuple[VanillaGaussianModel, VanillaRenderer, Dict[str, Any], DataParserOutputs]:
         ckpt_path = GaussianModelLoader.search_load_file(self.config.coarse_model_path)
         gaussian_model, renderer, ckpt = GaussianModelLoader.initialize_model_and_renderer_from_checkpoint_file(
             ckpt_path, device=self.device, eval_mode=False, pre_activate=False
@@ -319,7 +336,13 @@ class PartitionableScene:
 
                 id_tensor = torch.cat([id_tensor, torch.tensor([[i, j]]).to(id_tensor)], dim=0)
                 xy_tensor = torch.cat([xy_tensor, torch.tensor([[x_min, y_min]]).to(xy_tensor)], dim=0)
-                size_tensor = torch.cat([size_tensor, torch.tensor([[x_max - x_min, y_max - y_min]]).to(size_tensor)], dim=0)
+                size_tensor = torch.cat(
+                    [
+                        size_tensor,
+                        torch.tensor([[x_max - x_min, y_max - y_min]]).to(size_tensor),
+                    ],
+                    dim=0,
+                )
 
         return PartitionCoordinates(id=id_tensor, xy=xy_tensor, size=size_tensor)
 
@@ -403,15 +426,40 @@ class PartitionableScene:
         for idx, cell in enumerate(cells):
             i, j = idx2ij(idx)
             bbox: MinMaxBoundingBox = cell["bbox"]
-            id_tensor = torch.cat([id_tensor, torch.tensor([[i, j]], device=self.device, dtype=torch.long)], dim=0)
-            xy_tensor = torch.cat([xy_tensor, torch.tensor([[bbox.min[0], bbox.min[1]]], device=self.device, dtype=torch.float)], dim=0)
+            id_tensor = torch.cat(
+                [
+                    id_tensor,
+                    torch.tensor([[i, j]], device=self.device, dtype=torch.long),
+                ],
+                dim=0,
+            )
+            xy_tensor = torch.cat(
+                [
+                    xy_tensor,
+                    torch.tensor(
+                        [[bbox.min[0], bbox.min[1]]],
+                        device=self.device,
+                        dtype=torch.float,
+                    ),
+                ],
+                dim=0,
+            )
             size_tensor = torch.cat([size_tensor, (bbox.max - bbox.min).unsqueeze(0)], dim=0)
 
         return PartitionCoordinates(id=id_tensor, xy=xy_tensor, size=size_tensor)
 
     @torch.no_grad()
-    def compute_camera_visibility(self, partition_coords: PartitionCoordinates, cameras: Cameras, gaussian_model: VanillaGaussianModel):
-        cam_vis = torch.zeros((len(partition_coords), len(cameras)), device=self.device, dtype=torch.float32)
+    def compute_camera_visibility(
+        self,
+        partition_coords: PartitionCoordinates,
+        cameras: Cameras,
+        gaussian_model: VanillaGaussianModel,
+    ):
+        cam_vis = torch.zeros(
+            (len(partition_coords), len(cameras)),
+            device=self.device,
+            dtype=torch.float32,
+        )
 
         bboxes = partition_coords.get_bounding_boxes(enlarge=self.config.bbox_enlarge_by_camvis)
         gs_means = gaussian_model.get_xyz.detach().clone().to(self.device)
@@ -436,11 +484,17 @@ class PartitionableScene:
         intermediates_path = self.get_intermediates_path(output_path)
         intermediates = {}
         if osp.exists(osp.join(intermediates_path, "scene_division.pt")):
-            data = torch.load(osp.join(intermediates_path, "scene_division.pt"), map_location=self.device)
+            data = torch.load(
+                osp.join(intermediates_path, "scene_division.pt"),
+                map_location=self.device,
+            )
             intermediates["scene_bbox"] = MinMaxBoundingBox(**data["scene_bbox"])
             intermediates["partition_coords"] = PartitionCoordinates(**data["partition_coords"])
         if osp.exists(osp.join(intermediates_path, "camera_visibility.pt")):
-            intermediates["camera_visibility"] = torch.load(osp.join(intermediates_path, "camera_visibility.pt"), map_location=self.device)
+            intermediates["camera_visibility"] = torch.load(
+                osp.join(intermediates_path, "camera_visibility.pt"),
+                map_location=self.device,
+            )
         # if osp.exists(osp.join(intermediates_path, "gaussian_score.pt")):
         #     intermediates["gaussian_score"] = torch.load(osp.join(intermediates_path, "gaussian_score.pt"), map_location=self.device)
         return intermediates
@@ -495,7 +549,7 @@ class PartitionableScene:
                         "cx": camera.cx.item(),
                         "cy": camera.cy.item(),
                         "time": camera.time.item() if camera.time is not None else None,
-                        "appearance_id": camera.appearance_id.item() if camera.appearance_id is not None else None,
+                        "appearance_id": (camera.appearance_id.item() if camera.appearance_id is not None else None),
                         "normalized_appearance_id": (
                             camera.normalized_appearance_id.item() if camera.normalized_appearance_id is not None else None
                         ),
@@ -563,7 +617,12 @@ class PartitionableScene:
         return cell_bbox_objs
 
     def plot_cell(
-        self, ax: plt.Axes, cell_idx: int, partition_coords: PartitionCoordinates, campos: torch.Tensor, camera_assign: torch.Tensor
+        self,
+        ax: plt.Axes,
+        cell_idx: int,
+        partition_coords: PartitionCoordinates,
+        campos: torch.Tensor,
+        camera_assign: torch.Tensor,
     ):
         color = self.COLORLIST[cell_idx % self.N_COLORS]
 
@@ -600,8 +659,18 @@ class PartitionableScene:
         x_enlarge = (scene_bbox.max[0] - scene_bbox.min[0]) * enlarge
         y_enlarge = (scene_bbox.max[1] - scene_bbox.min[1]) * enlarge
 
-        ax.set_xlim([(scene_bbox.min[0] - x_enlarge).item(), (scene_bbox.max[0] + x_enlarge).item()])
-        ax.set_ylim([(scene_bbox.min[1] - y_enlarge).item(), (scene_bbox.max[1] + y_enlarge).item()])
+        ax.set_xlim(
+            [
+                (scene_bbox.min[0] - x_enlarge).item(),
+                (scene_bbox.max[0] + x_enlarge).item(),
+            ]
+        )
+        ax.set_ylim(
+            [
+                (scene_bbox.min[1] - y_enlarge).item(),
+                (scene_bbox.max[1] + y_enlarge).item(),
+            ]
+        )
 
         ax.set_aspect("equal", adjustable="box")
 
@@ -610,7 +679,8 @@ class PartitionableScene:
         xy_min, xy_max = bboxes.min.unsqueeze(1), bboxes.max.unsqueeze(1)  # [N_partitions, 1, 2]
         points = points[..., :2].unsqueeze(0)  # [1, N, 2]
         is_in_partition = torch.logical_and(
-            (points >= xy_min.to(points)).all(dim=-1), (points <= xy_max.to(points)).all(dim=-1)
+            (points >= xy_min.to(points)).all(dim=-1),
+            (points <= xy_max.to(points)).all(dim=-1),
         )  # [N_partitions, N]
         return is_in_partition
 
@@ -628,22 +698,6 @@ class PartitionableScene:
             transforms = torch.tensor(self.config.transforms, device=self.device)
             self._translation = transforms[4:]
         return self._translation
-
-    @staticmethod
-    def init_cdf_mask(importance: torch.Tensor, threshold: float):
-        importance = importance.flatten()
-        if threshold != 1.0:
-            percent_sum = threshold
-            vals, _ = torch.sort(importance + 1e-6)
-            cumsum_val = torch.cumsum(vals, dim=0)
-            split_index = ((cumsum_val / vals.sum()) > (1 - percent_sum)).nonzero().min()
-            split_val_nonprune = vals[split_index]
-
-            non_prune_mask = importance > split_val_nonprune
-        else:
-            non_prune_mask = torch.ones_like(importance).bool()
-
-        return non_prune_mask
 
     @staticmethod
     def get_intermediates_path(output_path: str) -> str:

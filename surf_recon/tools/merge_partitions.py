@@ -28,7 +28,15 @@ from surf_recon.utils.path_utils import (get_cells_output_dir,
                                          get_partition_info_dir,
                                          get_project_ckpt_dir)
 
-MERGABLE_PROPERTY_NAMES = ["means", "shs_dc", "shs_rest", "opacities", "scales", "rotations", MipSplattingModelMixin._filter_3d_name]
+MERGABLE_PROPERTY_NAMES = [
+    "means",
+    "shs_dc",
+    "shs_rest",
+    "opacities",
+    "scales",
+    "rotations",
+    MipSplattingModelMixin._filter_3d_name,
+]
 
 
 def parse_args():
@@ -136,7 +144,8 @@ def main():
     transform_matrix = build_transform_matrix(torch.tensor(metadata["scene"]["transforms"], dtype=torch.float32, device=device))
     scene_bbox = metadata["scene"]["bbox"]
     scene_bbox = MinMaxBoundingBox(
-        min=torch.tensor(scene_bbox[:2]).to(transform_matrix), max=torch.tensor(scene_bbox[2:]).to(transform_matrix)
+        min=torch.tensor(scene_bbox[:2]).to(transform_matrix),
+        max=torch.tensor(scene_bbox[2:]).to(transform_matrix),
     )
     # Build partition coordinates
     cell_xys, cell_sizes, cell_ids = [], [], []
@@ -146,13 +155,24 @@ def main():
         cell_sizes.append((torch.tensor(bbox[2:]) - torch.tensor(bbox[:2])).to(transform_matrix))
         cell_ids.append(torch.tensor(cell["partition_id"], dtype=torch.long, device=device))
     partition_coords = PartitionCoordinates(
-        id=torch.stack(cell_ids, dim=0), xy=torch.stack(cell_xys, dim=0), size=torch.stack(cell_sizes, dim=0)
+        id=torch.stack(cell_ids, dim=0),
+        xy=torch.stack(cell_xys, dim=0),
+        size=torch.stack(cell_sizes, dim=0),
     )
-    x_dim, y_dim = partition_coords.id[:, 0].max().item() + 1, partition_coords.id[:, 1].max().item() + 1
+    x_dim, y_dim = (
+        partition_coords.id[:, 0].max().item() + 1,
+        partition_coords.id[:, 1].max().item() + 1,
+    )
 
     # Process each cell
     gaussians_to_merge = {}
-    tetras_to_merge = {"gaussian_ids": [], "delaunay_tets": [], "base_occupancy": [], "occupancy_shift": [], "occupancy_label": []}
+    tetras_to_merge = {
+        "gaussian_ids": [],
+        "delaunay_tets": [],
+        "base_occupancy": [],
+        "occupancy_shift": [],
+        "occupancy_label": [],
+    }
     num_gaussians_merged = 0
     with tqdm(enumerate(partition_coords), desc="Merging cells") as pbar:
         for idx, (cell_id, cell_xy, cell_size) in pbar:

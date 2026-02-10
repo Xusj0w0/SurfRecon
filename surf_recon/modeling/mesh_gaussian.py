@@ -21,6 +21,7 @@ from internal.optimizers import (Adam, OptimizerConfig, SelectiveAdam,
 from internal.schedulers import ExponentialDecayScheduler, Scheduler
 from internal.utils.general_utils import build_rotation, inverse_sigmoid
 
+from ..utils.general_utils import get_cameras_center_and_diag, init_cdf_mask
 from ..utils.mesh import Meshes
 from ..utils.sdf import PointIntegration, SDFUtils, TSDFFusion
 from ..utils.tetmesh import marching_tetrahedra
@@ -103,7 +104,8 @@ class MeshMixin:
             faces_mask = dmtet_vertex_mask[faces].all(axis=1)
         if self.config.collapse_large_edges:
             min_end_points = end_points[
-                np.arange(end_points.shape[0]), end_sdf.argmin(dim=1).flatten().cpu().numpy()
+                np.arange(end_points.shape[0]),
+                end_sdf.argmin(dim=1).flatten().cpu().numpy(),
             ]  # TODO: Do the computation only for filtered vertices
             verts = torch.where(dmtet_vertex_mask[:, None], verts, min_end_points)
 
@@ -142,7 +144,7 @@ class MeshMixin:
 
         # Reset Delaunay gaussian samples
         if reset_delaunay:
-            self.sample_delaunay_gaussians(renderer=renderer, train_cameras=train_cameras)
+            self.sample_delaunay_gaussians(train_cameras=train_cameras)
         # Compute tetra vertices
         if reset_tetra or reset_occupancy or reset_occupancy_label:
             voronoi_points, voronoi_scales = self.compute_tetra_vertices()
@@ -171,19 +173,30 @@ class MeshMixin:
                 train_cameras=train_cameras,
             )
 
-    def sample_delaunay_gaussians(self, renderer: RaDeGSRendererModule, train_cameras: Cameras):
+    def sample_delaunay_gaussians(self, train_cameras: Cameras):
         delaunay_gaussian_ids = MeshGaussianUtils.sample_delaunay_gaussians(
             self.config.max_num_delaunay_gaussians,
             self,
-            renderer=renderer,
-            train_cameras=train_cameras,
+            cameras=train_cameras,
             sampling_method=self.config.delaunay_sampling_method,
         )
         self.set_delaunay_gaussian_ids(delaunay_gaussian_ids)
         # set base_occupancy and occupancy_shift to 0.0 (0.5 activated).
         self.set_delaunay_occupancy(
-            torch.full((self.n_delaunay_gaussians, self.config.num_delaunay_points_per_gaussian), 0.5),
-            torch.full((self.n_delaunay_gaussians, self.config.num_delaunay_points_per_gaussian), 0.5),
+            torch.full(
+                (
+                    self.n_delaunay_gaussians,
+                    self.config.num_delaunay_points_per_gaussian,
+                ),
+                0.5,
+            ),
+            torch.full(
+                (
+                    self.n_delaunay_gaussians,
+                    self.config.num_delaunay_points_per_gaussian,
+                ),
+                0.5,
+            ),
         )
         # set delaunay_tets to empty
         self.set_delaunay_tets(torch.zeros((0, 4)))
@@ -197,7 +210,11 @@ class MeshMixin:
 
     @torch.no_grad()
     def reset_occupancies(
-        self, voronoi_points: torch.Tensor, voronoi_scales: torch.Tensor, renderer: RaDeGSRendererModule, train_cameras: Cameras
+        self,
+        voronoi_points: torch.Tensor,
+        voronoi_scales: torch.Tensor,
+        renderer: RaDeGSRendererModule,
+        train_cameras: Cameras,
     ):
         initial_sdf = MeshGaussianUtils.compute_voronoi_sdf(
             voronoi_points=voronoi_points,
@@ -222,22 +239,39 @@ class MeshMixin:
         self.set_delaunay_occupancy(base_occupancy=base_occupancy, occupancy=new_occupancy)
 
     @torch.no_grad()
-    def reset_occupancy_labels(self, voronoi_points: torch.Tensor, renderer: NVDRRendererMixin, train_cameras: Cameras):
+    def reset_occupancy_labels(
+        self,
+        voronoi_points: torch.Tensor,
+        renderer: NVDRRendererMixin,
+        train_cameras: Cameras,
+    ):
         def _render(viewpoint: Camera):
-            render_pkg = renderer.render_mesh(viewpoint_camera=viewpoint, mesh=self.mesh, render_types=["mesh_depth"], anti_aliased=False)
+            render_pkg = renderer.render_mesh(
+                viewpoint_camera=viewpoint,
+                mesh=self.mesh,
+                render_types=["mesh_depth"],
+                anti_aliased=False,
+            )
             depth = render_pkg["mesh_depth"]
             return {"rgb": depth.new_zeros((3, *depth.shape[-2:])), "depth": depth}
 
         occupancy_labels, *_ = (
             TSDFFusion(points=voronoi_points, use_binary_opacity=True).run(cameras=train_cameras, render_fn=_render).get_outputs()
         )
-        occupancy_labels = rearrange(occupancy_labels.squeeze(), "(n k) -> n k", k=self.config.num_delaunay_points_per_gaussian)
+        occupancy_labels = rearrange(
+            occupancy_labels.squeeze(),
+            "(n k) -> n k",
+            k=self.config.num_delaunay_points_per_gaussian,
+        )
         self.set_delaunay_occupancy_label(occupancy_labels)
 
     def setup_extra_properties(self, num_delaunay_gaussians: int = 0, num_tetrahedra: int = 0):
         gaussian_ids = torch.zeros((num_delaunay_gaussians,), dtype=torch.long)
         delaunay_tets = torch.zeros((num_tetrahedra, 4), dtype=torch.long)
-        base_occupancy = torch.zeros((num_delaunay_gaussians, self.config.num_delaunay_points_per_gaussian), dtype=torch.float32)
+        base_occupancy = torch.zeros(
+            (num_delaunay_gaussians, self.config.num_delaunay_points_per_gaussian),
+            dtype=torch.float32,
+        )
         occupancy_shift = torch.zeros_like(base_occupancy, dtype=torch.float32)
         occupancy_label = torch.full_like(base_occupancy, -1, dtype=torch.float32)
         self.tetrahedra = nn.ParameterDict(
@@ -358,7 +392,8 @@ class MeshMixin:
 
     def set_delaunay_occupancy_label(self, delaunay_occupancy_label: torch.Tensor):
         self.tetrahedra["occupancy_label"] = nn.Parameter(
-            delaunay_occupancy_label.to(dtype=torch.float32, device=self.device), requires_grad=False
+            delaunay_occupancy_label.to(dtype=torch.float32, device=self.device),
+            requires_grad=False,
         )
 
     @property
@@ -419,12 +454,143 @@ class MeshVanillaGaussianModel(MeshMixin, VanillaGaussianModel):
 
 class MeshGaussianUtils:
     @classmethod
+    @torch.no_grad()
+    def post_extract_mesh(
+        cls,
+        gaussian_model: VanillaGaussianModel,
+        renderer,
+        cameras: Cameras,
+        max_num_delaunay_gaussians: int = 600_000,
+        opacity_threshold: float = 0.2,
+        trunc_margin: Optional[float] = None,
+        sdf_n_binary_steps: int = 8,
+        without_color: bool = False,
+        device: Optional[torch.device] = None,
+        tetra_on_cpu: bool = False,
+        skip_filtering: bool = False,
+    ) -> Meshes:
+        if device is None:
+            device = gaussian_model.get_xyz.device
+        # Tetrahedralization
+        delaunay_gaussian_ids = cls.sample_delaunay_gaussians(
+            n_samples=max_num_delaunay_gaussians,
+            gaussian_model=gaussian_model,
+            cameras=cameras,
+        )
+        voronoi_points, voronoi_scales = cls.compute_tetra_vertices(
+            gaussian_model=gaussian_model,
+            delaunay_gaussian_ids=delaunay_gaussian_ids,
+            opacity_threshold=opacity_threshold,
+        )
+        print("Running tetrahedralization with {} points...".format(len(voronoi_points)))
+
+        delaunay_tets = cls.compute_delaunay_tetrahedralization(voronoi_points)
+        gc.collect()
+        torch.cuda.empty_cache()
+
+        def _render(viewpoint: Camera):
+            outputs = renderer.forward(viewpoint, gaussian_model, render_types=["rgb", "depth"])
+            return {"rgb": outputs["render"], "depth": outputs["median_depth"]}
+
+        def _voronoi_sdf(points: torch.Tensor):
+            voronoi_sdf, *_ = (
+                TSDFFusion(points=points, trunc_margin=trunc_margin, use_binary_opacity=False)
+                .run(cameras=cameras, render_fn=_render)
+                .get_outputs()
+            )
+            return voronoi_sdf.squeeze()
+
+        voronoi_sdf = _voronoi_sdf(voronoi_points)
+        torch.cuda.empty_cache()
+        gc.collect()
+
+        # Marching Tetrahedra
+        if tetra_on_cpu:
+            verts_list, scale_list, faces_list, _ = marching_tetrahedra(
+                voronoi_points.cpu()[None],
+                delaunay_tets.cpu().long(),
+                voronoi_sdf.cpu()[None],
+                voronoi_scales.cpu()[None],
+            )
+        else:
+            verts_list, scale_list, faces_list, _ = marching_tetrahedra(
+                voronoi_points[None],
+                delaunay_tets.to(device).long(),
+                voronoi_sdf[None],
+                voronoi_scales[None],
+            )
+        end_points, end_sdf = verts_list[0]
+        end_points, end_sdf = end_points.to(device), end_sdf.to(device)
+        end_scales = scale_list[0].to(device)
+        faces = faces_list[0].to(device)
+        print("Extracted mesh with {} vertices and {} faces".format(len(end_points), len(faces)))
+
+        # Refine result of marching tetrahedra with binary search along intersected edges
+        left_points, right_points = end_points[:, 0, :], end_points[:, 1, :]
+        left_sdf, right_sdf = end_sdf[:, 0, :], end_sdf[:, 1, :]
+        left_scale, right_scale = end_scales[:, 0, 0], end_scales[:, 1, 0]
+        distance = torch.norm(left_points - right_points, dim=-1)
+        scale = left_scale + right_scale
+        points = (left_points + right_points) / 2
+        for _ in range(sdf_n_binary_steps):
+            mid_sdf = _voronoi_sdf(points)
+            mid_sdf = mid_sdf.unsqueeze(-1)
+            ind_low = ((mid_sdf < 0) & (left_sdf < 0)) | ((mid_sdf > 0) & (left_sdf > 0))
+
+            left_sdf[ind_low] = mid_sdf[ind_low]
+            right_sdf[~ind_low] = mid_sdf[~ind_low]
+            left_points[ind_low.flatten()] = points[ind_low.flatten()]
+            right_points[~ind_low.flatten()] = points[~ind_low.flatten()]
+            points = (left_points + right_points) / 2
+
+        camera_extent = get_cameras_center_and_diag(cameras)["diag"]
+        if not without_color:
+            # Extract vertex colors
+            tsdf, vertex_colors, _ = (
+                TSDFFusion(points=points, trunc_margin=trunc_margin).run(cameras=cameras, render_fn=_render).get_outputs()
+            )
+            invisible_pts_mask = tsdf.squeeze() < -1.1
+            _trunc_margin = camera_extent * 1.0
+            extra_vertex_colors, *_ = (
+                TSDFFusion(points=points[invisible_pts_mask], trunc_margin=_trunc_margin)
+                .run(cameras=cameras, render_fn=_render)
+                .get_outputs()
+            )
+            vertex_colors[invisible_pts_mask] = extra_vertex_colors
+            vertex_colors = (vertex_colors * 255).clip(min=0, max=255).astype(torch.uint8)
+
+        # Build mesh
+        mesh = Meshes(
+            verts=points,
+            faces=faces,
+            verts_colors=None if without_color else vertex_colors,
+        )
+
+        if not skip_filtering:
+            # Filter by scales
+            vert_mask = torch.logical_and(distance <= scale, distance <= camera_extent * 0.01)
+            mesh = mesh.submesh(vert_mask=vert_mask)
+            # Filter by visibility
+            is_visible = torch.zeros((len(mesh.verts),), dtype=torch.bool, device=device)
+            for idx in tqdm(range(len(cameras)), desc="Filtering mesh by visibility", leave=False):
+                camera = cameras[idx].to_device(device)
+                mesh_view = renderer.cull_mesh(mesh, camera)
+                rast_out, _ = renderer.nvdiff_rasterization(camera, mesh_view.verts, mesh_view.faces)
+                pix_to_faces = rast_out.pix_to_face.squeeze()
+                valid = pix_to_faces >= 0
+                face_indices = pix_to_faces[valid]
+                vert_indices = mesh_view.faces[face_indices]  # (N_valid, 3)
+                is_visible[vert_indices.flatten()] = True
+            mesh = mesh.submesh(vert_mask=is_visible)
+
+        return mesh
+
+    @classmethod
     def sample_delaunay_gaussians(
         cls,
         n_samples,
         gaussian_model: MeshMixin,
-        renderer: RaDeGSRendererModule,
-        train_cameras: Cameras,
+        cameras: Cameras,
         sampling_method: Literal["random", "surface"] = "surface",
     ):
         """
@@ -445,7 +611,11 @@ class MeshGaussianUtils:
             if sampling_method == "random":
                 return torch.randperm(n_gaussians, device=gaussian_model.get_xyz.device)[:n_samples]
             else:
-                return cls.sample_surface_gaussians(n_samples=n_samples, gaussian_model=gaussian_model, train_cameras=train_cameras)
+                return cls.sample_surface_gaussians(
+                    n_samples=n_samples,
+                    gaussian_model=gaussian_model,
+                    train_cameras=cameras,
+                )
 
     @staticmethod
     def compute_tetra_vertices(
@@ -479,7 +649,10 @@ class MeshGaussianUtils:
             if MipSplattingModel._filter_3d_name in gaussian_model.get_property_names():
                 opacities, scales = gaussian_model.get_3d_filtered_scales_and_opacities()
             else:
-                opacities, scales = gaussian_model.get_opacity, gaussian_model.get_scaling
+                opacities, scales = (
+                    gaussian_model.get_opacity,
+                    gaussian_model.get_scaling,
+                )
             scales = scales * 3.0
             quats = gaussian_model.get_rotation
 
@@ -581,11 +754,18 @@ class MeshGaussianUtils:
                     pc=gaussian_model,
                     render_types=["rgb", "depth"],
                 )
-                return {"rgb": render_pkg["render"], "depth": render_pkg["median_depth"]}
+                return {
+                    "rgb": render_pkg["render"],
+                    "depth": render_pkg["median_depth"],
+                }
 
             def voronoi_sdf(points: torch.Tensor):
                 sdf, _, _ = (
-                    TSDFFusion(points=points, trunc_margin=trunc_margin, use_binary_opacity=False)
+                    TSDFFusion(
+                        points=points,
+                        trunc_margin=trunc_margin,
+                        use_binary_opacity=False,
+                    )
                     .run(cameras=train_cameras, render_fn=_render)
                     .get_outputs()
                 )
@@ -615,7 +795,10 @@ class MeshGaussianUtils:
         gaussian_model: MeshMixin,
         train_cameras: Cameras,
     ):
-        n_gaussians, device = gaussian_model.get_xyz.shape[0], gaussian_model.get_xyz.device
+        n_gaussians, device = (
+            gaussian_model.get_xyz.shape[0],
+            gaussian_model.get_xyz.device,
+        )
         imp_score = torch.zeros(n_gaussians, device=device)
         accum_area_max = torch.zeros(n_gaussians, device=device)
         count_rad = torch.zeros(n_gaussians, device=device, dtype=torch.int32)
@@ -634,7 +817,7 @@ class MeshGaussianUtils:
             _score = imp_score + accum_weights / num_hit_pixels  # gaussian's average blending weight per pixel
             imp_score[mask] = _score[mask]
 
-            non_prune_mask = cls.init_cdf_mask(accum_weights, threshold=0.99)
+            non_prune_mask = init_cdf_mask(accum_weights, threshold=0.99)
             count_rad[visibility_filter] += 1
             count_vis[non_prune_mask] += 1
 
@@ -650,19 +833,3 @@ class MeshGaussianUtils:
         prune_mask = torch.logical_or(count_vis <= 1, ~non_prune_mask)
         sampled_idx = torch.arange(n_gaussians, device=device)[~prune_mask]
         return sampled_idx
-
-    @staticmethod
-    def init_cdf_mask(importance: torch.Tensor, threshold: float):
-        importance = importance.flatten()
-        if threshold != 1.0:
-            percent_sum = threshold
-            vals, _ = torch.sort(importance + (1e-6))
-            cumsum_val = torch.cumsum(vals, dim=0)
-            split_index = ((cumsum_val / vals.sum()) > (1 - percent_sum)).nonzero().min()
-            split_val_nonprune = vals[split_index]
-
-            non_prune_mask = importance > split_val_nonprune
-        else:
-            non_prune_mask = torch.ones_like(importance).bool()
-
-        return non_prune_mask

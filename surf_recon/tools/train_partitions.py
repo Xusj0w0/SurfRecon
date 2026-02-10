@@ -19,7 +19,13 @@ from utils.argparser_utils import parser_stoppable_args
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--project", "-p", type=str, required=True, help="Project name. Output path will be `outputs/{project}`")
+    parser.add_argument(
+        "--project",
+        "-p",
+        type=str,
+        required=True,
+        help="Project name. Output path will be `outputs/{project}`",
+    )
     parser.add_argument("--config", "-c", type=str, required=True, help="Path to config file.")
     parser.add_argument("--gpu_indices", type=str, default="0,1,2,3,4,5,6,7")
     args, training_args = parser_stoppable_args(parser)

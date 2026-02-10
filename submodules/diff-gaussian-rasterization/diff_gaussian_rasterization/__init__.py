@@ -350,7 +350,7 @@ class GaussianRasterizer(nn.Module):
 
         # Invoke C++/CUDA rasterization routine
         return _RasterizeGaussians.rasterize_importance(
-            means3D, means2D, opacities, scales, rotations, cov3D_precomp, weight_map, raster_settings
+            means3D, means2D, opacities, scales, rotations, weight_map, cov3D_precomp, raster_settings
         )
 
 

@@ -115,7 +115,10 @@ def main():
         camera_scalings, _cameras = {}, {}
         for camera_id, camera in cameras.items():
             resized_width, resized_height = get_resized_size(camera.width, camera.height, args.down_sample_factor, args.rescale_width)
-            scaling_x, scaling_y = float(resized_width) / camera.width, float(resized_height) / camera.height
+            scaling_x, scaling_y = (
+                float(resized_width) / camera.width,
+                float(resized_height) / camera.height,
+            )
             camera_scalings[camera.id] = (scaling_x, scaling_y)
 
             _params = deepcopy(camera.params)

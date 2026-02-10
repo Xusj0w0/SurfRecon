@@ -16,15 +16,13 @@ from ...utils.weight_scheduler import WeightScheduler
 
 
 @dataclass
-class InvDepthRegularizedMetricMixin:
+class DepthRegularizedMetricMixin:
     dn_from_iter: int = 3_000
     "Depth-Normal consistency regularization start iteration"
 
     lambda_dn: float = 0.05
 
-    depth_loss_type: Literal["l1", "l1+ssim", "l2", "kl"] = "l1"
-
-    depth_loss_ssim_weight: float = 0.2
+    depth_loss_type: Literal["l1", "log", "huber"] = "l1"
 
     depth_loss_weight: WeightScheduler = field(default_factory=lambda: WeightScheduler())
 
@@ -33,40 +31,35 @@ class InvDepthRegularizedMetricMixin:
     depth_map_key: str = "median_depth"
 
 
-class InvDepthRegularizedMetricMixinImpl:
-    config: InvDepthRegularizedMetricMixin
+class DepthRegularizedMetricMixinImpl:
+    config: DepthRegularizedMetricMixin
 
-    def get_inverse_depth_metric(self, batch, outputs):
+    def get_depth_metric(self, batch, outputs):
         # TODO: apply mask
 
-        camera, _, gt_inverse_depth_data = batch
+        camera, _, gt_depth_data = batch
         device = camera.device
 
-        if gt_inverse_depth_data is None:
+        if gt_depth_data is None:
             return torch.tensor(0.0, device=camera.device)
 
-        gt_inverse_depth = gt_inverse_depth_data.get(device=device)
+        gt_depth: torch.Tensor = gt_depth_data.get(device=device)
+        clamp_min = torch.quantile(gt_depth, 0.01)
 
-        predicted_inverse_depth = 1.0 / outputs[self.config.depth_map_key].clamp_min(0.01).squeeze()  # znear
+        predicted_depth = outputs[self.config.depth_map_key].clamp_min(0.01).squeeze()  # znear
         if self.config.depth_normalized:
-            clamp_val = (predicted_inverse_depth.mean() + 2 * predicted_inverse_depth.std()).item()
-            predicted_inverse_depth = predicted_inverse_depth.clamp(max=clamp_val) / clamp_val
-            gt_inverse_depth = gt_inverse_depth.clamp(max=clamp_val) / clamp_val
-
-        gt_shape = (
-            int(gt_inverse_depth_data.camera.height),
-            int(gt_inverse_depth_data.camera.width),
-        )
-        pred_shape = predicted_inverse_depth.shape[-2:]
+            clamp_val = (predicted_depth.mean() + 2 * predicted_depth.std()).item()
+            predicted_depth = predicted_depth.clamp(max=clamp_val) / clamp_val
+            gt_depth = gt_depth.clamp(max=clamp_val) / clamp_val
+        gt_shape = (int(gt_depth_data.camera.height), int(gt_depth_data.camera.width))
+        pred_shape = predicted_depth.shape[-2:]
         if pred_shape != gt_shape:
-            gt_inverse_depth = F.interpolate(
-                gt_inverse_depth[None, None, ...],
-                size=pred_shape,
-                mode="bilinear",
-                align_corners=True,
-            ).squeeze()
+            gt_depth = F.interpolate(gt_depth[None, None, ...], size=pred_shape, mode="bilinear", align_corners=True).squeeze()
 
-        return self._get_inverse_depth_loss(predicted_inverse_depth, gt_inverse_depth)
+        predicted_depth = predicted_depth.clamp_min(clamp_min)
+        gt_depth = gt_depth.clamp_min(clamp_min)
+
+        return self._get_depth_loss(predicted_depth, gt_depth)
 
     def get_dreg_weight(self, step: int):
         return self.config.depth_loss_weight.init * (
@@ -76,57 +69,41 @@ class InvDepthRegularizedMetricMixinImpl:
     def setup(self, stage: str, pl_module):
         super().setup(stage, pl_module)
 
-        if self.config.depth_loss_type == "l1":
-            self._get_inverse_depth_loss = self._depth_l1_loss
-        elif self.config.depth_loss_type == "l1+ssim":
-            # self.depth_ssim = StructuralSimilarityIndexMeasure()
-            self.depth_ssim = self._depth_ssim
-            self._get_inverse_depth_loss = self._depth_l1_and_ssim_loss
-        elif self.config.depth_loss_type == "l2":
-            self._get_inverse_depth_loss = self._depth_l2_loss
-        # elif self.config.depth_loss_type == "kl":
-        #     self._get_inverse_depth_loss = self._depth_kl_loss
+        if self.config.depth_loss_type == "log":
+            self._get_depth_loss = self._depth_log_loss
+        elif self.config.depth_loss_type == "l1":
+            self._get_depth_loss = self._depth_l1_loss
         else:
             raise NotImplementedError()
+        if pl_module is not None:
+            self._scene_extent = pl_module.trainer.datamodule.dataparser_outputs.camera_extent
+            if stage == "fit":
+                if self.config.depth_loss_weight.max_steps is None:
+                    self.config.depth_loss_weight.max_steps = pl_module.trainer.max_steps
+
+    def _depth_log_loss(self, a, b):
+        return torch.log(1 + (a - b).abs() / self._scene_extent).mean()
 
     def _depth_l1_loss(self, a, b):
-        return torch.abs(a - b).mean()
-
-    def _depth_l1_and_ssim_loss(self, a, b):
-        l1_loss = self._depth_l1_loss(a, b)
-        # ssim_metric = self.depth_ssim(a[None, None, ...], b[None, None, ...])
-        ssim_metric = self.depth_ssim(a, b)
-
-        return (1 - self.config.depth_loss_ssim_weight) * l1_loss + self.config.depth_loss_ssim_weight * (1 - ssim_metric)
-
-    def _depth_l2_loss(self, a, b):
-        return ((a - b) ** 2).mean()
-
-    def _depth_kl_loss(self, a, b):
-        pass
-
-    def _depth_ssim(self, a, b):
-        from internal.utils.ssim import ssim
-
-        return ssim(a[None], b[None])
+        return F.l1_loss(1.0 / a, 1.0 / b)
 
 
 @dataclass
-class InvDepthRegularizedMetrics(InvDepthRegularizedMetricMixin, VanillaMetrics):
+class DepthRegularizedMetrics(DepthRegularizedMetricMixin, VanillaMetrics):
     def instantiate(self, *args, **kwargs):
-        return InvDepthRegularizedMetricsImpl(self)
+        return DepthRegularizedMetricsImpl(self)
 
 
-class InvDepthRegularizedMetricsImpl(InvDepthRegularizedMetricMixinImpl, VanillaMetricsImpl):
-    config: InvDepthRegularizedMetrics
+class DepthRegularizedMetricsImpl(DepthRegularizedMetricMixinImpl, VanillaMetricsImpl):
+    config: DepthRegularizedMetrics
 
     def get_train_metrics(self, pl_module, gaussian_model, step, batch, outputs):
         metrics, pbar = super().get_train_metrics(pl_module, gaussian_model, step, batch, outputs)
 
         d_reg_weight = self.get_dreg_weight(step)
-        dreg = self.get_inverse_depth_metric(batch, outputs)
-        metrics["inv_depth_reg"] = dreg
-        pbar["inv_depth_reg"] = True
+        dreg = self.get_depth_metric(batch, outputs)
+        metrics["depth_reg"] = dreg
+        pbar["depth_reg"] = True
         metrics["loss"] += d_reg_weight * dreg
 
         loss_dn = torch.tensor(0.0).to(metrics["loss"])

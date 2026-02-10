@@ -139,7 +139,12 @@ def main():
             for batch in dataloader:
                 camera, (name, image, mask), extra = batch
                 image = image.to(device)
-                outputs = renderer(camera, gaussian_model, torch.zeros((3,)).to(image), render_types=["rgb"])
+                outputs = renderer(
+                    camera,
+                    gaussian_model,
+                    torch.zeros((3,)).to(image),
+                    render_types=["rgb"],
+                )
                 pbar.update(1)
                 cnt += 1
                 if cnt >= WARM_UP_ITERS:

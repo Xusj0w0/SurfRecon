@@ -134,10 +134,14 @@ def _unbatched_marching_tetrahedra(vertices, tets, sdf, scales):
     faces = torch.cat(
         (
             torch.gather(
-                input=idx_map[num_triangles == 1], dim=1, index=triangle_table_device[tetindex[num_triangles == 1]][:, :3]
+                input=idx_map[num_triangles == 1],
+                dim=1,
+                index=triangle_table_device[tetindex[num_triangles == 1]][:, :3],
             ).reshape(-1, 3),
             torch.gather(
-                input=idx_map[num_triangles == 2], dim=1, index=triangle_table_device[tetindex[num_triangles == 2]][:, :6]
+                input=idx_map[num_triangles == 2],
+                dim=1,
+                index=triangle_table_device[tetindex[num_triangles == 2]][:, :6],
             ).reshape(-1, 3),
         ),
         dim=0,

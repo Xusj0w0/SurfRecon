@@ -42,7 +42,15 @@ def rasterize_radegs(
         depth_required = True
 
     # Create zero tensor. We will use it to make pytorch return gradients of the 2D (screen-space) means
-    screenspace_points = torch.zeros_like(pc.get_xyz, dtype=pc.get_xyz.dtype, requires_grad=True, device=bg_color.device) + 0
+    screenspace_points = (
+        torch.zeros_like(
+            pc.get_xyz,
+            dtype=pc.get_xyz.dtype,
+            requires_grad=True,
+            device=bg_color.device,
+        )
+        + 0
+    )
 
     # Set up rasterization configuration
     tanfovx = math.tan(viewpoint_camera.fov_x * 0.5)
@@ -204,7 +212,15 @@ class RaDeGSRendererModule(VanillaRenderer):
             bg_color = torch.tensor(self.config.default_background, device=pc.get_xyz.device)
 
         # Create zero tensor. We will use it to make pytorch return gradients of the 2D (screen-space) means
-        screenspace_points = torch.zeros_like(pc.get_xyz, dtype=pc.get_xyz.dtype, requires_grad=True, device=bg_color.device) + 0
+        screenspace_points = (
+            torch.zeros_like(
+                pc.get_xyz,
+                dtype=pc.get_xyz.dtype,
+                requires_grad=True,
+                device=bg_color.device,
+            )
+            + 0
+        )
 
         # Set up rasterization configuration
         tanfovx = math.tan(viewpoint_camera.fov_x * 0.5)
@@ -269,7 +285,14 @@ class RaDeGSRendererModule(VanillaRenderer):
             colors_precomp = override_color
 
         # Rasterize visible Gaussians to image, obtain their radii (on screen).
-        rendered_image, alpha_integrated, color_integrated, point_coordinate, point_sdf, radii = rasterizer.integrate(
+        (
+            rendered_image,
+            alpha_integrated,
+            color_integrated,
+            point_coordinate,
+            point_sdf,
+            radii,
+        ) = rasterizer.integrate(
             points3D=points3D,
             means3D=means3D,
             means2D=means2D,

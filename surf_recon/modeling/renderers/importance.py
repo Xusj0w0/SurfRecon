@@ -62,7 +62,14 @@ def rasterize_importance(
         scales = _scales
 
     # Rasterize visible Gaussians to image, obtain their radii (on screen).
-    num_rendered, radii, accum_weights, accum_scaled_weights, num_hit_pixels, num_max_pixels = rasterizer.rasterize_importance(
+    (
+        num_rendered,
+        radii,
+        accum_weights,
+        accum_scaled_weights,
+        num_hit_pixels,
+        num_max_pixels,
+    ) = rasterizer.rasterize_importance(
         means3D=means3D,
         means2D=means2D,
         opacities=opacity,

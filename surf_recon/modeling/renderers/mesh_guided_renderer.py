@@ -31,10 +31,22 @@ class MeshGuidedRendererModule(VanillaRenderer):
         render_types: list = None,
     ):
         if bg_color is None:
-            bg_color = torch.ones(3, device=viewpoint_camera.device, dtype=viewpoint_camera.full_projection.dtype)
+            bg_color = torch.ones(
+                3,
+                device=viewpoint_camera.device,
+                dtype=viewpoint_camera.full_projection.dtype,
+            )
 
         # Create zero tensor. We will use it to make pytorch return gradients of the 2D (screen-space) means
-        screenspace_points = torch.zeros_like(pc.get_xyz, dtype=pc.get_xyz.dtype, requires_grad=True, device=bg_color.device) + 0
+        screenspace_points = (
+            torch.zeros_like(
+                pc.get_xyz,
+                dtype=pc.get_xyz.dtype,
+                requires_grad=True,
+                device=bg_color.device,
+            )
+            + 0
+        )
 
         # Set up rasterization configuration
         tanfovx = math.tan(viewpoint_camera.fov_x * 0.5)
@@ -126,7 +138,14 @@ class NVDRGuidedRenderer(RendererConfig):
 
 
 class NVDRGuidedRendererModule(MeshGuidedRendererModule, NVDRRendererMixin):
-    def __init__(self, config: NVDRGuidedRenderer, mesh: Optional[Meshes], tolerance: float, *args, **kwargs):
+    def __init__(
+        self,
+        config: NVDRGuidedRenderer,
+        mesh: Optional[Meshes],
+        tolerance: float,
+        *args,
+        **kwargs,
+    ):
         super().__init__(*args, **kwargs)
         self.config = config
         self.mesh = mesh
@@ -155,7 +174,14 @@ class Open3DGuidedRenderer(RendererConfig):
 class Open3DGuidedRendererModule(MeshGuidedRendererModule):
     config: Open3DGuidedRenderer
 
-    def __init__(self, mesh: Optional[o3d.geometry.TriangleMesh], tolerance: float, resolution: Tuple[int], *args, **kwargs):
+    def __init__(
+        self,
+        mesh: Optional[o3d.geometry.TriangleMesh],
+        tolerance: float,
+        resolution: Tuple[int],
+        *args,
+        **kwargs,
+    ):
         super().__init__(*args, **kwargs)
         self.mesh = mesh
         self.tolerance = tolerance

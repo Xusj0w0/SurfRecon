@@ -1,6 +1,6 @@
-from .invdepth_reg import (InvDepthRegularizedMetricMixin,
-                           InvDepthRegularizedMetricMixinImplmpl,
-                           InvDepthRegularizedMetrics,
+from .invdepth_reg import (InvDepthRegularizedMetrics,
                            InvDepthRegularizedMetricsImpl)
-from .mesh_reg import (MeshRegularizationSchedule, MeshRegularizedMetrics,
+from .mesh_reg import (DepthMeshRegularizedMetrics,
+                       DepthMeshRegularizedMetricsImpl,
+                       MeshRegularizationSchedule, MeshRegularizedMetrics,
                        MeshRegularizedMetricsImpl)

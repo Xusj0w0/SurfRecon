@@ -27,7 +27,16 @@ class MeshBindedRenderer(RaDeGSRenderer):
 class MeshBindedRendererModule(NVDRRendererMixin, RaDeGSRendererModule):
     config: MeshBindedRenderer
 
-    def forward(self, viewpoint_camera: Camera, pc, bg_color: torch.Tensor = None, render_types: list = None, *args, **kwargs):
+    def forward(
+        self,
+        viewpoint_camera: Camera,
+        pc,
+        bg_color: torch.Tensor = None,
+        render_types: list = None,
+        mesh=None,
+        *args,
+        **kwargs,
+    ):
         if render_types is None:
             render_types = ["rgb"]
         gs_render_types, mesh_render_types = [], []
@@ -37,9 +46,17 @@ class MeshBindedRendererModule(NVDRRendererMixin, RaDeGSRendererModule):
             else:
                 gs_render_types.append(t)
 
-        output_pkg = super().forward(viewpoint_camera, pc, bg_color=bg_color, render_types=gs_render_types, *args, **kwargs)
+        output_pkg = super().forward(
+            viewpoint_camera,
+            pc,
+            bg_color=bg_color,
+            render_types=gs_render_types,
+            *args,
+            **kwargs,
+        )
         if len(mesh_render_types) > 0:
-            mesh = getattr(pc, "mesh", None)
+            if mesh is None:
+                mesh = getattr(pc, "mesh", None)
             if mesh is None:
                 mesh = pc.extract_mesh()
             output_pkg.update(
@@ -79,7 +96,13 @@ class MeshBindedRendererModule(NVDRRendererMixin, RaDeGSRendererModule):
         return outputs
 
     def setup(self, stage: str, lightning_module=None, *args, **kwargs):
-        super().setup(stage=stage, lightning_module=lightning_module, use_opengl=self.config.nvdr_config.use_opengl, *args, **kwargs)
+        super().setup(
+            stage=stage,
+            lightning_module=lightning_module,
+            use_opengl=self.config.nvdr_config.use_opengl,
+            *args,
+            **kwargs,
+        )
         if stage == "fit" and self.config.appearance_model.enabled:
             self.appearance_model = self.config.appearance_model.instantiate()
             self.appearance_model.setup(stage, lightning_module)

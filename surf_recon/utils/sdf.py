@@ -8,6 +8,7 @@ from tqdm import tqdm
 
 from internal.cameras import Camera, Cameras
 
+from ..utils.general_utils import get_cameras_center_and_diag
 from .tetmesh import marching_tetrahedra
 
 
@@ -47,7 +48,12 @@ class TSDFFusion:
         if self.use_binary_opacity:
             self.tsdf = torch.ones((self.n_points, 1), device=self.device, dtype=torch.float32)
         else:
-            self.tsdf = torch.full((self.n_points, 1), fill_value=self.initial_sdf_value, device=self.device, dtype=torch.float32)
+            self.tsdf = torch.full(
+                (self.n_points, 1),
+                fill_value=self.initial_sdf_value,
+                device=self.device,
+                dtype=torch.float32,
+            )
         self.colors = torch.zeros((self.n_points, 3), device=self.device, dtype=torch.float32)
         self.weights = torch.zeros((self.n_points, 1), device=self.device, dtype=torch.float32)
 
@@ -71,7 +77,7 @@ class TSDFFusion:
         """
         if self.trunc_margin is None:
             if not self.use_binary_opacity:
-                self.trunc_margin = 2e-3 * self.get_cameras_center_and_diag(cameras)["diag"]
+                self.trunc_margin = 2e-3 * get_cameras_center_and_diag(cameras)["diag"]
             else:
                 self.trunc_margin = 1.0
 
@@ -132,7 +138,11 @@ class TSDFFusion:
         )
 
         int_pix_points = pix_points.round().long()  # (N, 2)
-        pix_x, pix_y, pix_z = pix_points[..., 0], pix_points[..., 1], view_points[..., 2]
+        pix_x, pix_y, pix_z = (
+            pix_points[..., 0],
+            pix_points[..., 1],
+            view_points[..., 2],
+        )
         int_pix_x, int_pix_y = int_pix_points[..., 0], int_pix_points[..., 1]
 
         # Remove points outside view frustum and outside depth range
@@ -285,17 +295,6 @@ class TSDFFusion:
         interpolated_value = interpolated_value.reshape(-1, n_points).permute(1, 0)
         return interpolated_value
 
-    @staticmethod
-    def get_cameras_center_and_diag(cameras: Cameras):
-        """
-        Modified from internal.dataparsers.dataparser.DataParserOutputs.__post_init__
-        """
-        camera_centers = cameras.camera_center
-        average_camera_center = torch.mean(camera_centers, dim=0)
-        camera_distance = torch.linalg.norm(camera_centers - average_camera_center, dim=-1)
-        max_distance = torch.max(camera_distance)
-        return {"center": average_camera_center, "diag": max_distance.item() * 1.1}
-
     @property
     def device(self) -> torch.device:
         return self.points.device
@@ -404,9 +403,15 @@ class PointIntegration:
         valid_mask = valid_mask.unsqueeze(-1)
         if self.return_colors:
             self.colors[chunk_slice] = torch.where(
-                valid_mask * (alpha.unsqueeze(-1) < self.sdf[chunk_slice]).reshape(-1, 1), color, self.colors[chunk_slice]
+                valid_mask * (alpha.unsqueeze(-1) < self.sdf[chunk_slice]).reshape(-1, 1),
+                color,
+                self.colors[chunk_slice],
             )
-        self.sdf[chunk_slice] = torch.where(valid_mask, torch.min(alpha.unsqueeze(-1), self.sdf[chunk_slice]), self.sdf[chunk_slice])
+        self.sdf[chunk_slice] = torch.where(
+            valid_mask,
+            torch.min(alpha.unsqueeze(-1), self.sdf[chunk_slice]),
+            self.sdf[chunk_slice],
+        )
         self.weights[chunk_slice] = torch.where(valid_mask, self.weights[chunk_slice] + 1, self.weights[chunk_slice])
 
     @staticmethod
@@ -483,7 +488,10 @@ class SDFUtils:
         if n_binary_steps > 0:
             # Initial Marching Tetrahedra
             verts_list, scale_list, faces_list, interp_v = marching_tetrahedra(
-                vertices=voronoi_points[None], tets=delaunay_tets, sdf=voronoi_sdf.reshape(1, -1), scales=voronoi_scales[None]
+                vertices=voronoi_points[None],
+                tets=delaunay_tets,
+                sdf=voronoi_sdf.reshape(1, -1),
+                scales=voronoi_scales[None],
             )
             end_points, end_sdf = verts_list[0]  # (N_verts, 2, 3) and (N_verts, 2, 1)
             end_scales = scale_list[0]  # (N_verts, 2, 1)
@@ -647,7 +655,11 @@ class SDFUtils:
         sdf_counts = torch.zeros_like(sdf_values)
 
         new_sdf_values.index_add_(dim=0, index=end_idx.flatten().long(), source=sdfs.flatten())
-        sdf_counts.index_add_(dim=0, index=end_idx.flatten().long(), source=torch.ones_like(sdfs.flatten()))
+        sdf_counts.index_add_(
+            dim=0,
+            index=end_idx.flatten().long(),
+            source=torch.ones_like(sdfs.flatten()),
+        )
 
         new_sdf_values = torch.where(sdf_counts > 0, new_sdf_values / sdf_counts, sdf_values)
 

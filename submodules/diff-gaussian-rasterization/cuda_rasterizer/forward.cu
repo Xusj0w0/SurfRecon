@@ -395,15 +395,16 @@ __global__ void __launch_bounds__(BLOCK_X *BLOCK_Y) rasterizeImportanceCUDA(
                pix_min.y + block.thread_index().y};
   uint32_t pix_id = W * pix.y + pix.x;
   float2 pixf = {(float)pix.x, (float)pix.y};
-  float pix_weight = -1.0f;
-  if (weightmap != nullptr && pix.x < W && pix.y < H) {
-    pix_weight = weightmap[pix_id];
-  }
 
   // Check if this thread is associated with a valid pixel or outside.
   bool inside = pix.x < W && pix.y < H;
   // Done threads can help with fetching, but don't rasterize
   bool done = !inside;
+
+  float pix_weight = -1.0f;
+  if (weightmap != nullptr && inside) {
+    pix_weight = weightmap[pix_id];
+  }
 
   // Load start/end range of IDs to process in bit sorted list.
   uint2 range =

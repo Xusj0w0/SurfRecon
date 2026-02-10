@@ -223,10 +223,10 @@ RasterizeGaussianImportancesCUDA(
     torch::Tensor color = torch::full({P, NUM_CHANNELS}, 0.0, float_opts);
     torch::Tensor campos = torch::full({3}, 0, float_opts);
 
-    const float *wptr = nullptr;
+    bool is_w_valid = false;
     if (weightmap.defined() && weightmap.numel() > 0) {
       if (weightmap.size(0) == H && weightmap.size(1) == W) {
-        wptr = weightmap.contiguous().data<float>();
+        is_w_valid = true;
       }
     }
 
@@ -241,7 +241,8 @@ RasterizeGaussianImportancesCUDA(
         viewmatrix.contiguous().data<float>(),
         projmatrix.contiguous().data<float>(),
         campos.contiguous().data<float>(), tan_fovx, tan_fovy, prefiltered,
-        wptr, radii.contiguous().data<int>(),
+        is_w_valid ? weightmap.data<float>() : nullptr,
+        radii.contiguous().data<int>(),
         accum_weights.contiguous().data<float>(),
         accum_scaled_weights.contiguous().data<float>(),
         num_hit_pixels.contiguous().data<int>(),
@@ -295,9 +296,9 @@ RasterizeGaussiansWithZBufCUDA(
       M = sh.size(1);
     }
 
-    const float *zptr = nullptr;
+    bool is_z_valid = false;
     if (zbuf.defined() && zbuf.numel() > 0) {
-      zptr = zbuf.contiguous().data<float>();
+      is_z_valid = true;
     }
 
     rendered = CudaRasterizer::Rasterizer::rasterize_with_zbuf(
@@ -312,7 +313,8 @@ RasterizeGaussiansWithZBufCUDA(
         projmatrix.contiguous().data<float>(),
         campos.contiguous().data<float>(), tan_fovx, tan_fovy, prefiltered,
         out_color.contiguous().data<float>(), radii.contiguous().data<int>(),
-        zptr, tolerance, debug);
+        is_z_valid ? zbuf.contiguous().data<float>() : nullptr, tolerance,
+        debug);
   }
   return std::make_tuple(rendered, out_color, radii, geomBuffer, binningBuffer,
                          imgBuffer);

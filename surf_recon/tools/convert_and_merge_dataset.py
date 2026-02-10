@@ -68,7 +68,13 @@ def merge_sparse_model(
                 break
         if same_cam_id < 0:
             camera_id += 1
-            new_cam = Camera(id=camera_id, model=v.model, width=v.width, height=v.height, params=v.params)
+            new_cam = Camera(
+                id=camera_id,
+                model=v.model,
+                width=v.width,
+                height=v.height,
+                params=v.params,
+            )
             cameras[camera_id] = new_cam
             val_cam_mapping[k] = camera_id
         else:
@@ -89,7 +95,10 @@ def merge_sparse_model(
     }
     image_id = max(images.keys())
     val_img_mapping = {}
-    for k, v in _images.items():  # "id", "qvec", "tvec", "camera_id", "name", "xys", "point3D_ids"
+    for (
+        k,
+        v,
+    ) in _images.items():  # "id", "qvec", "tvec", "camera_id", "name", "xys", "point3D_ids"
         image_id += 1
         new_img = Image(
             id=image_id,
@@ -110,7 +119,14 @@ def merge_sparse_model(
         point3d_id += 1
         image_ids = np.array([val_img_mapping[i] for i in v.image_ids.tolist()])
         image_ids = image_ids.astype(v.image_ids.dtype)
-        new_point = Point3D(id=point3d_id, xyz=v.xyz, rgb=v.rgb, error=v.error, image_ids=image_ids, point2D_idxs=v.point2D_idxs)
+        new_point = Point3D(
+            id=point3d_id,
+            xyz=v.xyz,
+            rgb=v.rgb,
+            error=v.error,
+            image_ids=image_ids,
+            point2D_idxs=v.point2D_idxs,
+        )
         points3d[point3d_id] = new_point
         val_pts3d_mapping[k] = point3d_id
 
@@ -213,7 +229,13 @@ def main():
         train_cameras, train_images, train_points3d = load_sparse_model(osp.join(args.input_dir, "train/sparse"))
         val_cameras, val_images, val_points3d = load_sparse_model(osp.join(args.input_dir, "val/sparse"))
         cameras, images, points3d = merge_sparse_model(
-            train_cameras, train_images, train_points3d, val_cameras, val_images, val_points3d, args.prefix
+            train_cameras,
+            train_images,
+            train_points3d,
+            val_cameras,
+            val_images,
+            val_points3d,
+            args.prefix,
         )
         val_image_names = [v.name for v in val_images.values()]
         with open(osp.join(args.output_dir, "val_images.txt"), "w") as f:
@@ -224,7 +246,10 @@ def main():
         camera_scalings, _cameras = {}, {}
         for camera_id, camera in cameras.items():
             resized_width, resized_height = get_resized_size(camera.width, camera.height, args.down_sample_factor, args.rescale_width)
-            scaling_x, scaling_y = float(resized_width) / camera.width, float(resized_height) / camera.height
+            scaling_x, scaling_y = (
+                float(resized_width) / camera.width,
+                float(resized_height) / camera.height,
+            )
             camera_scalings[camera.id] = (scaling_x, scaling_y)
 
             _params = deepcopy(camera.params)

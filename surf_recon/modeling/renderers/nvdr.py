@@ -45,7 +45,10 @@ class RasterizerOutputs:
         return self._pix_to_face
 
     def fuse(self, rast_out: "RasterizerOutputs"):
-        assert (self.image_width, self.image_height) == (rast_out.image_width, rast_out.image_height)
+        assert (self.image_width, self.image_height) == (
+            rast_out.image_width,
+            rast_out.image_height,
+        )
         width, height = self.image_width, self.image_height
 
         mask1 = self.pix_to_face > -1
@@ -100,6 +103,8 @@ class NVDRRendererMixin:
             anti_aliased = self.config.nvdr_config.anti_aliased
 
         mesh_view = self.cull_mesh(mesh, viewpoint_camera)
+        if len(mesh_view.faces) <= 0:
+            return {}
         # Rasterize
         if max_triangles_in_batch < 0:
             rast_out, verts_in_ndc = self.nvdiff_rasterization(viewpoint_camera, mesh_view.verts, mesh_view.faces, self._gl_context)
@@ -109,13 +114,18 @@ class NVDRRendererMixin:
             for st in range(0, mesh_view.faces.shape[0], max_triangles_in_batch):
                 ed = min(mesh_view.faces.shape[0], st + max_triangles_in_batch)
                 sub_rast_out, verts_in_ndc = self.nvdiff_rasterization(
-                    viewpoint_camera, mesh_view.verts, mesh_view.faces[st:ed], self._gl_context
+                    viewpoint_camera,
+                    mesh_view.verts,
+                    mesh_view.faces[st:ed],
+                    self._gl_context,
                 )
                 if rast_out is None:
                     rast_out = sub_rast_out
                 else:
                     sub_rast_out.rast_out[..., 3] = torch.where(
-                        sub_rast_out.pix_to_face > -1, sub_rast_out.rast_out[..., 3] + idx_shift, sub_rast_out.rast_out[..., 3]
+                        sub_rast_out.pix_to_face > -1,
+                        sub_rast_out.rast_out[..., 3] + idx_shift,
+                        sub_rast_out.rast_out[..., 3],
                     )
                     if hasattr(sub_rast_out, "_pix_to_face"):
                         delattr(sub_rast_out, "_pix_to_face")
@@ -127,7 +137,10 @@ class NVDRRendererMixin:
             filtered_faces = mesh_view.faces[filtered_face_idx]
             filtered_pix_to_face = filtered_pix_to_face - 1
 
-            new_rast_tensor = torch.zeros((1, rast_out.image_height, rast_out.image_width, 4), device=rast_out.zbuf.device)
+            new_rast_tensor = torch.zeros(
+                (1, rast_out.image_height, rast_out.image_width, 4),
+                device=rast_out.zbuf.device,
+            )
             new_rast_tensor[..., :2] = rast_out.bary_coords[..., :2]
             new_rast_tensor[..., 2] = rast_out.zbuf
             new_rast_tensor[..., 3] = rast_out.pix_to_face.float() + 1
@@ -144,7 +157,10 @@ class NVDRRendererMixin:
 
         if depth_required:
             depth_idx = features.shape[-1]
-            verts_h = torch.cat([mesh_view.verts, mesh_view.verts.new_ones((len(mesh_view.verts), 1))], dim=1)
+            verts_h = torch.cat(
+                [mesh_view.verts, mesh_view.verts.new_ones((len(mesh_view.verts), 1))],
+                dim=1,
+            )
             verts_depths = (verts_h @ viewpoint_camera.world_to_camera)[..., 2].squeeze()
             features = torch.cat([features, verts_depths.unsqueeze(-1)], dim=-1)
         if color_required:
@@ -158,7 +174,11 @@ class NVDRRendererMixin:
         if anti_aliased:
             feature_img = dr.antialias(feature_img, rast_out.rast_out, verts_in_ndc, mesh_view.faces)
 
-        output_pkg = {}
+        output_pkg = {
+            "nvdr_rast_out": rast_out,
+            "mesh_verts_in_ndc": verts_in_ndc,
+            "mesh_view": mesh_view,
+        }
         output_pkg["mesh_rgb"] = feature_img[..., color_idx : color_idx + 3][0].permute(2, 0, 1) if color_required else None
         output_pkg["mesh_depth"] = feature_img[..., depth_idx : depth_idx + 1][0].permute(2, 0, 1) if depth_required else None
 
@@ -177,7 +197,14 @@ class NVDRRendererMixin:
 
         return output_pkg
 
-    def setup(self, stage: str, lightning_module=None, use_opengl: bool = False, *args, **kwargs):
+    def setup(
+        self,
+        stage: str,
+        lightning_module=None,
+        use_opengl: bool = False,
+        *args,
+        **kwargs,
+    ):
         super().setup(stage=stage, lightning_module=lightning_module, *args, **kwargs)
         if use_opengl:
             self._gl_context = dr.RasterizeGLContext()
