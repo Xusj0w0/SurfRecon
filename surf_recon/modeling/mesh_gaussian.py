@@ -833,3 +833,55 @@ class MeshGaussianUtils:
         prune_mask = torch.logical_or(count_vis <= 1, ~non_prune_mask)
         sampled_idx = torch.arange(n_gaussians, device=device)[~prune_mask]
         return sampled_idx
+
+    @classmethod
+    def sample_surface_gaussians_topk(
+        cls,
+        n_samples: int,
+        gaussian_model: MeshMixin,
+        train_cameras: Cameras,
+        top_k: int = 3,
+    ):
+        from ..utils.general_utils import TopKTracker
+
+        n_gaussians, device = (
+            gaussian_model.get_xyz.shape[0],
+            gaussian_model.get_xyz.device,
+        )
+        imp_score = torch.zeros(n_gaussians, device=device)
+        accum_area_max = torch.zeros(n_gaussians, device=device)
+        count_rad = torch.zeros(n_gaussians, device=device, dtype=torch.int32)
+        count_vis = torch.zeros(n_gaussians, device=device, dtype=torch.int32)
+
+        tracker = TopKTracker(n_gaussians, k=top_k, device=device)
+
+        for idx in tqdm(range(len(train_cameras)), desc="Sampling surface Gaussians", leave=False):
+            viewpoint = train_cameras[idx].to_device(device)
+            outputs = rasterize_importance(viewpoint, gaussian_model)
+            visibility_filter = outputs["visibility_filter"]
+            accum_weights = outputs["accum_weights"]
+            num_hit_pixels = outputs["num_hit_pixels"]
+            num_max_pixels = outputs["num_max_pixels"]
+
+            accum_area_max += num_max_pixels
+            # mask = num_max_pixels != 0
+            _score = accum_weights / (num_hit_pixels + 1e-8)
+            tracker.update(_score)
+
+            non_prune_mask = init_cdf_mask(accum_weights, threshold=0.99)
+            count_rad[visibility_filter] += 1
+            count_vis[non_prune_mask] += 1
+
+        imp_score = tracker.means
+        imp_score[accum_area_max == 0] = 0
+        prob = imp_score / imp_score.sum()  # normalize
+        n_nonzero_prob = (prob != 0).sum().item()
+
+        n_samples = min(n_samples, n_nonzero_prob)
+        indices = torch.from_numpy(np.random.choice(len(prob), size=n_samples, p=prob.detach().cpu().numpy(), replace=False)).to(device)
+        non_prune_mask = torch.zeros(n_gaussians, device=device, dtype=torch.bool)
+        non_prune_mask[indices] = True
+
+        prune_mask = torch.logical_or(count_vis <= 1, ~non_prune_mask)
+        sampled_idx = torch.arange(n_gaussians, device=device)[~prune_mask]
+        return sampled_idx

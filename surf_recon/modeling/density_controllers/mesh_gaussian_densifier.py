@@ -19,7 +19,9 @@ from .trim_density_controller import (TrimDensityControllerImplMixin,
 class MeshGaussianDensityController(VanillaDensityController, TrimDensityControllerMixin):
     start_trim_ratio: float = 0.5
 
-    cull_opacity_threshold: float = field(default=0.05)
+    cull_opacity_threshold: float = field(default=0.01)
+
+    trim_from_iter: int = field(default=60_000)  # no trim
 
     def instantiate(self, *args, **kwargs):
         return MeshGaussianDensityControllerImpl(self)
@@ -31,22 +33,22 @@ class MeshGaussianDensityControllerImpl(VanillaDensityControllerImpl, TrimDensit
     def setup(self, stage: str, pl_module) -> None:
         super().setup(stage, pl_module)
 
-        def _trim_on_train_start(gaussian_model, module):
-            initialize_from = module.hparams.get("initialize_from", None)
-            if initialize_from is None or not osp.exists(initialize_from):
-                return
-            cameras = module.trainer.datamodule.dataparser_outputs.train_set.cameras
-            optimizers = self._exclude_occupancy_optimizer(module.trainer.optimizers)
-            prune_mask = self._get_trimming_prune_mask(
-                cameras,
-                gaussian_model,
-                top_k=self.config.top_k,
-                ratio=self.config.start_trim_ratio,
-            )
-            self._prune_points(prune_mask, gaussian_model, optimizers)
-            torch.cuda.empty_cache()
+        pl_module.on_train_start_hooks.append(self._on_train_start)
 
-        pl_module.on_train_start_hooks.append(_trim_on_train_start)
+    def _on_train_start(self, gaussian_model, module):
+        initialize_from = module.hparams.get("initialize_from", None)
+        if initialize_from is None or not osp.exists(initialize_from):
+            return
+        cameras = module.trainer.datamodule.dataparser_outputs.train_set.cameras
+        optimizers = self._exclude_occupancy_optimizer(module.trainer.optimizers)
+        prune_mask = self._get_trimming_prune_mask(
+            cameras,
+            gaussian_model,
+            top_k=self.config.top_k,
+            ratio=self.config.start_trim_ratio,
+        )
+        self._prune_points(prune_mask, gaussian_model, optimizers)
+        torch.cuda.empty_cache()
 
     def after_backward(self, outputs, batch, gaussian_model, optimizers, global_step, pl_module):
         _optimizers = self._exclude_occupancy_optimizer(optimizers)

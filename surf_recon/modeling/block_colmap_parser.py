@@ -37,17 +37,17 @@ class BlockDataParserMixin:
         return _transforms, _bounding_box
 
     def get_outputs(self) -> DataParserOutputs:
-        cell_part_info_dir = get_cell_partition_info_dir(self.params.partition_info_dir, self.params.cell_name)
-        if not osp.exists(cell_part_info_dir):
-            return
+        try:
+            cell_part_info_dir = get_cell_partition_info_dir(self.params.partition_info_dir, self.params.cell_name)
+            # image_list
+            image_list_path = osp.join(cell_part_info_dir, "image_list.txt")
+            if osp.exists(image_list_path):
+                self.params.image_list = image_list_path
 
-        # image_list
-        image_list_path = osp.join(cell_part_info_dir, "image_list.txt")
-        if osp.exists(image_list_path):
-            self.params.image_list = image_list_path
-
-        outputs = super().get_outputs()
-        outputs._bounding_box = self._get_bounding_box()
+            outputs = super().get_outputs()
+            outputs._bounding_box = self._get_bounding_box()
+        except:
+            outputs = super().get_outputs()
         return outputs
 
 

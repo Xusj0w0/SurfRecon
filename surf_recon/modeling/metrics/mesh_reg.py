@@ -300,10 +300,12 @@ class MeshRegularizedMetricsImpl(VanillaMetricsImpl):
 
             render = outputs["render"]
             median_depth = outputs["median_depth"]
+            clamp_min = torch.quantile(median_depth, 0.03)
+            median_depth = median_depth.clamp_min(min=clamp_min)
             normal = (1.0 - outputs["normal"]) / 2.0
             mesh_depth = outputs.get("mesh_depth", None)
             if mesh_depth is not None:
-                mesh_depth = torch.where(mesh_depth > median_depth.min(), mesh_depth, median_depth.min())
+                mesh_depth = mesh_depth.clamp_min(min=clamp_min)
                 median_depth = cls.depth2invdepth(median_depth)
                 mesh_depth = cls.depth2invdepth(mesh_depth)
                 mesh_normal = torch.einsum(

@@ -22,13 +22,13 @@ class DepthRegularizedMetricMixin:
 
     lambda_dn: float = 0.05
 
-    depth_loss_type: Literal["l1", "log", "huber"] = "l1"
+    depth_loss_type: Literal["l1", "ssim", "log", "huber"] = "l1"
 
     depth_loss_weight: WeightScheduler = field(default_factory=lambda: WeightScheduler())
 
     depth_normalized: bool = False
 
-    depth_map_key: str = "median_depth"
+    depth_map_key: str = "expected_depth"
 
 
 class DepthRegularizedMetricMixinImpl:
@@ -73,6 +73,8 @@ class DepthRegularizedMetricMixinImpl:
             self._get_depth_loss = self._depth_log_loss
         elif self.config.depth_loss_type == "l1":
             self._get_depth_loss = self._depth_l1_loss
+        elif self.config.depth_loss_type == "ssim":
+            self._get_depth_loss = self._depth_ssim_loss
         else:
             raise NotImplementedError()
         if pl_module is not None:
@@ -86,6 +88,11 @@ class DepthRegularizedMetricMixinImpl:
 
     def _depth_l1_loss(self, a, b):
         return F.l1_loss(1.0 / a, 1.0 / b)
+
+    def _depth_ssim_loss(self, a, b):
+        from internal.utils.ssim import ssim
+
+        return 1.0 - ssim(a[None], b[None])
 
 
 @dataclass
@@ -135,10 +142,10 @@ class DepthRegularizedMetricsImpl(DepthRegularizedMetricMixinImpl, VanillaMetric
         metrics, pbar = super().get_validate_metrics(pl_module, gaussian_model, batch, outputs)
 
         d_reg_weight = self.get_dreg_weight(pl_module.trainer.global_step)
-        dreg = self.get_inverse_depth_metric(batch, outputs)
+        dreg = self.get_depth_metric(batch, outputs)
 
-        metrics["inv_depth_reg"] = dreg
-        pbar["inv_depth_reg"] = True
+        metrics["depth_reg"] = dreg
+        pbar["depth_reg"] = True
         metrics["loss"] += d_reg_weight * dreg
 
         return metrics, pbar

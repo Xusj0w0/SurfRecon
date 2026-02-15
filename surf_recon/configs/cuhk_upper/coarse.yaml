@@ -6,7 +6,7 @@ name: coarse
 data:
   path: data/GauU_Scene/CUHK_UPPER_CAMPUS
   parser:
-    class_path: internal.dataparsers.Colmap
+    class_path: surf_recon.modeling.block_colmap_parser.BlockDepthColmap
     init_args:
       split_mode: experiment
       eval_image_select_mode: ratio
@@ -28,10 +28,12 @@ model:
   renderer:
     class_path: surf_recon.modeling.renderers.RaDeGSRenderer
   metric:
-    class_path: surf_recon.modeling.metrics.InvDepthRegularizedMetrics
+    class_path: surf_recon.modeling.metrics.DepthRegularizedMetrics
+    init_args:
+      dn_from_iter: 7_000
+      depth_loss_weight:
+        init: 0.5
   density:
     class_path: surf_recon.modeling.density_controllers.TrimDensityController
     init_args:
-      densification_interval: 100
-      opacity_reset_interval: 3000
-      densify_until_iter: 15_000
+      densification_interval: 200

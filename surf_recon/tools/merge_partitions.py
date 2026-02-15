@@ -130,7 +130,10 @@ def update_ckpt(ckpt, gaussian_model: VanillaGaussianModel):
     ckpt["optimizer_states"] = []
 
     # Remove image_list in dataparser
-    ckpt["datamodule_hyper_parameters"]["parser"].image_list = None
+    dataparser = ckpt["datamodule_hyper_parameters"]["parser"]
+    new_dataparser = Colmap(**{k: getattr(dataparser, k, None) for k in Colmap.__dataclass_fields__})
+    new_dataparser.image_list = None
+    ckpt["datamodule_hyper_parameters"]["parser"] = new_dataparser
 
 
 def main():

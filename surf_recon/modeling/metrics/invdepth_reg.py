@@ -88,6 +88,12 @@ class InvDepthRegularizedMetricMixinImpl:
         #     self._get_inverse_depth_loss = self._depth_kl_loss
         else:
             raise NotImplementedError()
+        if pl_module is not None:
+            self._scene_extent = pl_module.trainer.datamodule.dataparser_outputs.camera_extent
+            if stage == "fit":
+                if self.config.depth_loss_weight.max_steps is None:
+                    self.config.depth_loss_weight.max_steps = pl_module.trainer.max_steps
+
 
     def _depth_l1_loss(self, a, b):
         return torch.abs(a - b).mean()
