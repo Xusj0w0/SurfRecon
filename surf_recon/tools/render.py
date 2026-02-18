@@ -123,7 +123,8 @@ def main():
     image_saver = get_image_saver(async_image_saver, osp.join(args.output_dir, "images"))
 
     # Render
-    bg_color = torch.zeros((3,), dtype=torch.float32, device=device)
+    # bg_color = torch.zeros((3,), dtype=torch.float32, device=device)
+    bg_color = torch.tensor(ckpt["hyper_parameters"]["background_color"], dtype=torch.float32, device=device)
     for batch in tqdm(dataloader, desc="Rendering and evaluating"):
         camera, (name, image, mask), extra = batch
         image = image.to(device)

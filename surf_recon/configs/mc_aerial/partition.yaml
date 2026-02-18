@@ -1,1 +1,3 @@
 partition_dim: [4, 4]
+bbox_enlarge_by_campos: 0.1
+bbox_enlarge_by_camvis: 0.1

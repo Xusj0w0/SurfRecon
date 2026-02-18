@@ -6,13 +6,12 @@ name: coarse
 data:
   path: data/MatrixCity/aerial
   parser:
-    class_path: internal.dataparsers.Colmap
-    # class_path: internal.dataparsers.estimated_depth_colmap_dataparser.EstimatedDepthColmap
+    class_path: surf_recon.modeling.block_colmap_parser.BlockDepthColmap
     init_args:
       split_mode: experiment
       eval_image_select_mode: list
       eval_list: data/MatrixCity/aerial/val_images.txt
-  train_max_num_images_to_cache: 256
+  train_max_num_images_to_cache: 64
   num_workers: 6
   async_caching: true
 
@@ -30,15 +29,16 @@ model:
   renderer:
     class_path: surf_recon.modeling.renderers.RaDeGSRenderer
   metric:
-    class_path: surf_recon.modeling.metrics.InvDepthRegularizedMetrics
+    class_path: surf_recon.modeling.metrics.DepthRegularizedMetrics
     init_args:
       dn_from_iter: 15_000
+      depth_loss_weight:
+        init: 0.5
   density:
     class_path: surf_recon.modeling.density_controllers.TrimDensityController
     init_args:
-      densification_interval: 200
-      opacity_reset_interval: 6_000
+      densification_interval: 1000
+      opacity_reset_interval: 6000
       densify_until_iter: 30_000
-      trim_from_iter: 5_000
-      trim_interval: 3_000
-      trim_ratio: 0.1
+      trim_interval: 3000
+      trim_ratio: 0.05
