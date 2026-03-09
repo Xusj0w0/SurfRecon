@@ -1,6 +1,6 @@
 # Supplemental Materials for Submission #5995
 
-We provide a codebase for reproduction in 
+We provide a codebase for reproduction in [SculptGS](https://anonymous.4open.science/r/SculptGS)
 
 ## 1. Installation
 
