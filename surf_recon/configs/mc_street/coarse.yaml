@@ -6,13 +6,13 @@ name: coarse
 data:
   path: data/MatrixCity/street
   parser:
-    class_path: internal.dataparsers.estimated_depth_colmap_dataparser.EstimatedDepthColmap
+    class_path: surf_recon.modeling.block_colmap_parser.BlockDepthColmap
     init_args:
       split_mode: experiment
       eval_image_select_mode: list
       eval_list: data/MatrixCity/street/val_images.txt
-  train_max_num_images_to_cache: 256
-  num_workers: 4
+  train_max_num_images_to_cache: 64
+  num_workers: 6
   async_caching: true
 
 model:
@@ -22,7 +22,8 @@ model:
     class_path: internal.models.vanilla_gaussian.VanillaGaussian
     init_args:
       optimization:
-        scales_lr: 1e-3
+        optimizer:
+          class_path: surf_recon.modeling.selective_adam.SelectiveAdam
         means_lr_init: 1.6e-5
         means_lr_scheduler:
           lr_final: 1.6e-6
@@ -30,17 +31,20 @@ model:
   renderer:
     class_path: surf_recon.modeling.renderers.RaDeGSRenderer
   metric:
-    class_path: surf_recon.modeling.metrics.InvDepthRegularizedMetrics
+    class_path: surf_recon.modeling.metrics.DepthRegularizedMetrics
     init_args:
-      dn_from_iter: 15_000
+      dn_from_iter: 0
+      depth_loss_weight:
+        init: 1.0
+        final_factor: 0.1
   density:
     class_path: surf_recon.modeling.density_controllers.TrimDensityController
     init_args:
-      densify_grad_threshold: 1e-5
-      densify_from_iter: 1_000
-      densification_interval: 1000
-      opacity_reset_interval: 60_000
+      densify_grad_threshold: 5e-6
+      densify_from_iter: 4_000
       densify_until_iter: 30_000
-      trim_from_iter: 60_000
-      trim_interval: 10_000
-      trim_ratio: 0.05
+      densification_interval: 2_000
+      trim_from_iter: 60_000  # disable trimming
+      opacity_reset_interval: 60_000  # disable resetting opacity
+      cull_opacity_threshold: 0.05
+      percent_dense: 2e-3  # orig: 1e-2. facilitate splitting rather than cloning

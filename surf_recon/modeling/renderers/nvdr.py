@@ -215,7 +215,7 @@ class NVDRRendererMixin:
     def cull_mesh(cls, mesh: Meshes, camera: Camera):
         # filter by camera frustum
         vert_mask = cls.is_in_view_frustum(mesh.verts, camera)
-        face_mask = vert_mask[mesh.faces].any(dim=-1)
+        face_mask = vert_mask[mesh.faces].all(dim=-1)
         mesh_view = Meshes(verts=mesh.verts, faces=mesh.faces[face_mask])
         return mesh_view
 

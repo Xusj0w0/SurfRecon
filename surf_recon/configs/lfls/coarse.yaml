@@ -9,8 +9,8 @@ data:
     class_path: surf_recon.modeling.block_colmap_parser.BlockDepthColmap
     init_args:
       split_mode: experiment
-      eval_image_select_mode: ratio
-      eval_ratio: 0.1
+      eval_image_select_mode: list
+      eval_list: data/GauU_Scene/LFLS/val_images.txt
   train_max_num_images_to_cache: -1
   num_workers: 6
   async_caching: true

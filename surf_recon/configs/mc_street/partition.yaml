@@ -1,2 +1,4 @@
 partition_dim: [4, 3]
 transforms: [0.965473, -0.017095, 0.016883, 0.259391, 0.0, 0.0, 0.0]
+bbox_enlarge_by_campos: 0.1
+bbox_enlarge_by_camvis: 0.1

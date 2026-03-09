@@ -477,6 +477,11 @@ class MeshGaussianUtils:
             gaussian_model=gaussian_model,
             cameras=cameras,
         )
+        # delaunay_gaussian_ids = cls.sample_surface_gaussians_topk(
+        #     n_samples=max_num_delaunay_gaussians,
+        #     gaussian_model=gaussian_model,
+        #     train_cameras=cameras,
+        # )
         voronoi_points, voronoi_scales = cls.compute_tetra_vertices(
             gaussian_model=gaussian_model,
             delaunay_gaussian_ids=delaunay_gaussian_ids,
@@ -575,6 +580,8 @@ class MeshGaussianUtils:
             for idx in tqdm(range(len(cameras)), desc="Filtering mesh by visibility", leave=False):
                 camera = cameras[idx].to_device(device)
                 mesh_view = renderer.cull_mesh(mesh, camera)
+                if mesh_view.faces.shape[0] <= 0:
+                    continue
                 rast_out, _ = renderer.nvdiff_rasterization(camera, mesh_view.verts, mesh_view.faces)
                 pix_to_faces = rast_out.pix_to_face.squeeze()
                 valid = pix_to_faces >= 0
@@ -865,8 +872,9 @@ class MeshGaussianUtils:
 
             accum_area_max += num_max_pixels
             # mask = num_max_pixels != 0
-            _score = accum_weights / (num_hit_pixels + 1e-8)
-            tracker.update(_score)
+            # _score = accum_weights / (num_hit_pixels + 1e-8)
+            # tracker.update(_score)
+            tracker.update(accum_weights)
 
             non_prune_mask = init_cdf_mask(accum_weights, threshold=0.99)
             count_rad[visibility_filter] += 1

@@ -16,7 +16,7 @@ data:
   async_caching: true
 
 model:
-  background_color: [0.25, 0.25, 0.25]
+  # background_color: [0.25, 0.25, 0.25]
   renderer_output_types: [rgb, depth, normal]
   gaussian:
     class_path: internal.models.vanilla_gaussian.VanillaGaussian

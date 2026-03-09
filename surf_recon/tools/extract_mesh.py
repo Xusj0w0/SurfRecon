@@ -24,7 +24,7 @@ def parse_args():
     parser.add_argument("--dataset_path", "-d", type=str, required=True, help="Path to dataset")
     parser.add_argument("--output_path", "-o", type=str, required=True, help="Path to output ply mesh")
     parser.add_argument("--num_max_delaunay_gaussians", type=int, default=600_000)
-    parser.add_argument("--opacity_threshold", type=float, default=0.2)
+    parser.add_argument("--opacity_threshold", type=float, default=0.0)
     parser.add_argument("--trunc_margin", type=float, default=-1.0)
     parser.add_argument("--sdf_n_binary_steps", type=int, default=8)
     parser.add_argument("--without_color", action="store_false")
@@ -105,7 +105,7 @@ def main():
     # post-process mesh
     mesh_o3d = post_process_mesh(mesh_o3d, 50)
     os.makedirs(os.path.dirname(args.output_path), exist_ok=True)
-    o3d.io.write_triangle_mesh(args.output_path, mesh_o3d, write_triangle_uvs=False, write_vertex_normals=True)
+    o3d.io.write_triangle_mesh(args.output_path, mesh_o3d, write_triangle_uvs=False, write_vertex_normals=False)
 
 
 if __name__ == "__main__":

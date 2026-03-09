@@ -180,13 +180,12 @@ class DepthGuidedDensityControllerImpl(MeshGaussianDensityControllerImpl):
             # gather valid coords
             if self.config.guided_densify_ratio > 0.0:
                 camera_ds: Camera = gt_depth_data.camera.to_device(device)
-                densify_pixels = torch.logical_and(valid_pixels, diff_depth > 2e-3 * self._scene_extent)
-                densify_weights = loss * (diff_depth.abs() / gt_depth_clamp) * densify_pixels
+                densify_pixels = torch.logical_and(valid_pixels, diff_depth > 0.0 * self._scene_extent)
+                densify_weights = loss * (diff_depth.abs()) * densify_pixels
                 coords = self._gather_valid_coords(camera_ds, densify_weights, gt_image, gt_depth_ds)
                 if coords is not None:
                     voxel_grid.update(coords[:, :3], coords[:, 3:])
 
-        prune_mask = None
         if self.config.guided_densify_ratio > 0.0:
             # build new Gaussians from voxels
             n_gaussians = gaussian_model.n_gaussians
@@ -202,8 +201,6 @@ class DepthGuidedDensityControllerImpl(MeshGaussianDensityControllerImpl):
 
         # prune with scores
         if self.config.guided_prune_ratio > 0.0:
-            if prune_mask is not None:
-                prune_scores = prune_scores[~prune_mask]
             prune_mask = prune_scores > torch.quantile(prune_scores, 1 - self.config.guided_prune_ratio)
             self._prune_points(prune_mask, gaussian_model, optimizers)
             self._n_gaussians_prev = gaussian_model.n_gaussians  # update prev num after pruning
@@ -478,8 +475,6 @@ class DepthGuidedDensityControllerImpl(MeshGaussianDensityControllerImpl):
             return
         if not self._enable_guided_densify:
             return
-        if module.trainer.global_step > 0:
-            return
 
         device = gaussian_model.get_xyz.device
         cameras = module.trainer.datamodule.dataparser_outputs.train_set.cameras
@@ -490,63 +485,63 @@ class DepthGuidedDensityControllerImpl(MeshGaussianDensityControllerImpl):
         renderer = module.renderer
         bg_color = torch.zeros((3,), device=device)
         voxel_grid = SparseVoxelFeatureAccumulator(voxel_size=2e-3 * self._scene_extent, feat_dim=4)
-        if self.config.guided_densify_ratio > 0.0:
-            for idx in tqdm(range(len(cameras)), desc="Computing depth-guided densification scores", leave=False):
-                # load camera, gt_image, and gt_depth
-                camera = cameras[indices[idx]].to_device(device)
-                _, (image_name, gt_image, _), gt_depth_data = self._cached_data[indices[idx]]
-                if gt_depth_data is None:
-                    continue
-                gt_image = gt_image.to(device)
-                gt_depth_ds: torch.Tensor = gt_depth_data.get(device=device)
-                depth_mean, depth_std = gt_depth_ds.mean(), gt_depth_ds.std()
-                clamp_min, clamp_max = depth_mean - 2 * depth_std, depth_mean + 2 * depth_std
+        # if self.config.guided_densify_ratio > 0.0:
+        #     for idx in tqdm(range(len(cameras)), desc="Computing depth-guided densification scores", leave=False):
+        #         # load camera, gt_image, and gt_depth
+        #         camera = cameras[indices[idx]].to_device(device)
+        #         _, (image_name, gt_image, _), gt_depth_data = self._cached_data[indices[idx]]
+        #         if gt_depth_data is None:
+        #             continue
+        #         gt_image = gt_image.to(device)
+        #         gt_depth_ds: torch.Tensor = gt_depth_data.get(device=device)
+        #         depth_mean, depth_std = gt_depth_ds.mean(), gt_depth_ds.std()
+        #         clamp_min, clamp_max = depth_mean - 2 * depth_std, depth_mean + 2 * depth_std
 
-                # render
-                outputs = renderer(camera, gaussian_model, bg_color, render_types=["rgb", "depth"])
-                render = outputs["render"]
-                gaussian_depth = outputs["median_depth"].squeeze()
-                gt_depth_shape = (int(gt_depth_data.camera.height), int(gt_depth_data.camera.width))
-                if gaussian_depth.shape[-2:] != gt_depth_shape:
-                    gt_depth = F.interpolate(
-                        gt_depth_ds[None, None, ...], size=gaussian_depth.shape[-2:], mode="bilinear", align_corners=True
-                    ).squeeze()
-                else:
-                    gt_depth = gt_depth_ds
-                valid_pixels = torch.logical_and(gt_depth > clamp_min, gt_depth < clamp_max)
+        #         # render
+        #         outputs = renderer(camera, gaussian_model, bg_color, render_types=["rgb", "depth"])
+        #         render = outputs["render"]
+        #         gaussian_depth = outputs["median_depth"].squeeze()
+        #         gt_depth_shape = (int(gt_depth_data.camera.height), int(gt_depth_data.camera.width))
+        #         if gaussian_depth.shape[-2:] != gt_depth_shape:
+        #             gt_depth = F.interpolate(
+        #                 gt_depth_ds[None, None, ...], size=gaussian_depth.shape[-2:], mode="bilinear", align_corners=True
+        #             ).squeeze()
+        #         else:
+        #             gt_depth = gt_depth_ds
+        #         valid_pixels = torch.logical_and(gt_depth > clamp_min, gt_depth < clamp_max)
 
-                # compute depth diff
-                gaussian_depth_clamp, gt_depth_clamp = gaussian_depth.clamp_min(min=clamp_min), gt_depth.clamp_min(min=clamp_min)
-                diff_depth = gaussian_depth_clamp - gt_depth_clamp
-                diff_depth_weight = 1 + torch.log(1 + diff_depth.clamp_min(min=0.0) / (self._scene_extent + 1e-8))
+        #         # compute depth diff
+        #         gaussian_depth_clamp, gt_depth_clamp = gaussian_depth.clamp_min(min=clamp_min), gt_depth.clamp_min(min=clamp_min)
+        #         diff_depth = gaussian_depth_clamp - gt_depth_clamp
+        #         diff_depth_weight = 1 + torch.log(1 + diff_depth.clamp_min(min=0.0) / (self._scene_extent + 1e-8))
 
-                # gather coords
-                camera_ds: Camera = gt_depth_data.camera.to_device(device)
-                densify_pixels = torch.logical_and(valid_pixels, diff_depth > 2e-3 * self._scene_extent)
-                densify_weights = diff_depth_weight * densify_pixels
-                coords = self._gather_valid_coords(camera_ds, densify_weights, gt_image, gt_depth_ds)
-                if coords is not None:
-                    voxel_grid.update(coords[:, :3], coords[:, 3:])
+        #         # gather coords
+        #         camera_ds: Camera = gt_depth_data.camera.to_device(device)
+        #         densify_pixels = torch.logical_and(valid_pixels, diff_depth > 2e-3 * self._scene_extent)
+        #         densify_weights = diff_depth_weight * densify_pixels
+        #         coords = self._gather_valid_coords(camera_ds, densify_weights, gt_image, gt_depth_ds)
+        #         if coords is not None:
+        #             voxel_grid.update(coords[:, :3], coords[:, 3:])
 
-            # build new Gaussians from voxels before trimming at start
-            n_gaussians = gaussian_model.n_gaussians
-            xyz, vals, cnt = voxel_grid.finalize(return_count=True)
-            rgb = (vals[:, :3] / (cnt + 1e-8)).clamp(min=0.0, max=1.0)
-            intensity = vals[:, 3] / (cnt.squeeze() + 1e-8)
-            n_samples = min(int(self.config.guided_densify_ratio * n_gaussians), (intensity > 0).sum().item())
-            new_properties = self._build_gaussians_from_pcd(
-                xyz=xyz, rgb=rgb, intensity=intensity, n_samples=n_samples, gaussian_model=gaussian_model
-            )
+        #     # build new Gaussians from voxels before trimming at start
+        #     n_gaussians = gaussian_model.n_gaussians
+        #     xyz, vals, cnt = voxel_grid.finalize(return_count=True)
+        #     rgb = (vals[:, :3] / (cnt + 1e-8)).clamp(min=0.0, max=1.0)
+        #     intensity = vals[:, 3] / (cnt.squeeze() + 1e-8)
+        #     n_samples = min(int(self.config.guided_densify_ratio * n_gaussians), (intensity > 0).sum().item())
+        #     new_properties = self._build_gaussians_from_pcd(
+        #         xyz=xyz, rgb=rgb, intensity=intensity, n_samples=n_samples, gaussian_model=gaussian_model
+        #     )
 
         # prune points
         self._prune_points(prune_mask, gaussian_model, optimizers)
         self._n_gaussians_prev = gaussian_model.n_gaussians
         # densify
-        if self.config.guided_densify_ratio > 0.0:
-            new_parameters = Utils.cat_tensors_to_properties(new_properties, gaussian_model, optimizers)
-            gaussian_model.properties = new_parameters
-            self._extend_densification_states(len(new_properties["means"]))
-            torch.cuda.empty_cache()
+        # if self.config.guided_densify_ratio > 0.0:
+        #     new_parameters = Utils.cat_tensors_to_properties(new_properties, gaussian_model, optimizers)
+        #     gaussian_model.properties = new_parameters
+        #     self._extend_densification_states(len(new_properties["means"]))
+        #     torch.cuda.empty_cache()
 
     @classmethod
     def _compute_loss(cls, a: torch.Tensor, b: torch.Tensor):

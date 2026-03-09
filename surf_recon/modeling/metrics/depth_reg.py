@@ -44,7 +44,7 @@ class DepthRegularizedMetricMixinImpl:
             return torch.tensor(0.0, device=camera.device)
 
         gt_depth: torch.Tensor = gt_depth_data.get(device=device)
-        clamp_min = torch.quantile(gt_depth, 0.01)
+        clamp_min, clamp_max = torch.quantile(gt_depth, 0.05), torch.quantile(gt_depth, 0.95)
 
         predicted_depth = outputs[self.config.depth_map_key].clamp_min(0.01).squeeze()  # znear
         if self.config.depth_normalized:
@@ -56,8 +56,8 @@ class DepthRegularizedMetricMixinImpl:
         if pred_shape != gt_shape:
             gt_depth = F.interpolate(gt_depth[None, None, ...], size=pred_shape, mode="bilinear", align_corners=True).squeeze()
 
-        predicted_depth = predicted_depth.clamp_min(clamp_min)
-        gt_depth = gt_depth.clamp_min(clamp_min)
+        predicted_depth = predicted_depth.clamp(clamp_min)
+        gt_depth = gt_depth.clamp(clamp_min)
 
         return self._get_depth_loss(predicted_depth, gt_depth)
 

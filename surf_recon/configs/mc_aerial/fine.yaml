@@ -13,7 +13,7 @@ data:
       eval_list: data/MatrixCity/aerial/val_images.txt
 
 model:
-  background_color: [0.25, 0.25, 0.25]
+  # background_color: [0.25, 0.25, 0.25]
   renderer_output_types: [rgb, depth, normal]
   initialize_from: outputs/mc_aerial/partition_info/gaussians.ply
   gaussian:

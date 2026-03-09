@@ -64,7 +64,7 @@ class TrimDensityControllerImplMixin:
             camera = camera.to_device(device)
             gt_depth_ds: torch.Tensor = gt_depth_data.get(device)
             depth_mean, depth_std = gt_depth_ds.mean(), gt_depth_ds.std()
-            clamp_min, clamp_max = depth_mean - 2 * depth_std, depth_mean + 2 * depth_std
+            clamp_min, clamp_max = torch.quantile(gt_depth_ds, 0.5), torch.quantile(gt_depth_ds, 0.9)
             clamp_min = max(clamp_min.item(), 0.01)
             # render
             outputs = renderer(camera, gaussian_model, bg_color, render_types=["rgb", "depth"])
@@ -76,15 +76,15 @@ class TrimDensityControllerImplMixin:
                 ).squeeze()
             else:
                 gt_depth = gt_depth_ds
-            valid_pixels = (gt_depth > clamp_min) & (gt_depth < clamp_max)
+            valid_pixels = gt_depth > clamp_min  # & (gt_depth < clamp_max)
 
             # compute depth diff
             gaussian_depth_clamp, gt_depth_clamp = gaussian_depth.clamp_min(min=clamp_min), gt_depth.clamp_min(min=clamp_min)
             diff_depth = gaussian_depth_clamp - gt_depth_clamp
-            valid_pixels = valid_pixels & (diff_depth < -2e-3 * self._scene_extent)
+            valid_pixels = valid_pixels & (diff_depth < 0.0)
             prune_weights = diff_depth.abs() * valid_pixels
             importances = rasterize_importance(camera, gaussian_model, weight_map=prune_weights)
-            scores = importances["accum_weights"] / (importances["num_hit_pixels"] + 1e-5)
+            scores = importances["accum_weights"]  # / (importances["num_hit_pixels"] + 1e-5)
             prune_scores = torch.max(prune_scores, scores)
 
         # Determine the threshold to trim gaussians
@@ -174,7 +174,12 @@ class DepthGuidedTrimDensityControllerImpl(TrimDensityControllerImpl):
             self.update_states(outputs)
 
             # trim before resetting opacity
-            if self._enable_guided_trim and global_step > self.config.trim_from_iter and global_step % self.config.trim_interval == 0:
+            if (
+                self._enable_guided_trim
+                and global_step > self.config.trim_from_iter
+                and global_step % self.config.trim_interval == 0
+                and global_step >= self.opacity_reset_at + self.config.densification_interval
+            ):
                 prune_mask = self._depth_guided_trimming(gaussian_model, pl_module.renderer, ratio=self.config.trim_ratio)
                 self._prune_points(prune_mask, gaussian_model, optimizers)
                 torch.cuda.empty_cache()

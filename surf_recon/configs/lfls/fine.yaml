@@ -9,8 +9,8 @@ data:
     init_args:
       partition_info_dir: outputs/lfls/partition_info
       split_mode: experiment
-      eval_image_select_mode: ratio
-      eval_ratio: 0.1
+      eval_image_select_mode: list
+      eval_list: data/GauU_Scene/LFLS/val_images.txt
   train_max_num_images_to_cache: -1
   num_workers: 6
   async_caching: true
@@ -40,3 +40,5 @@ model:
     class_path: surf_recon.modeling.density_controllers.depth_guided_densifier.DepthGuidedDensityController
     init_args:
       densification_interval: 400
+      cull_opacity_threshold: 0.05
+      guided_densify_ratio: 0.05

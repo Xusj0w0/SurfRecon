@@ -14,12 +14,12 @@ from internal.dataparsers import DataParserOutputs
 from internal.dataset import CacheDataLoader, Dataset
 from internal.utils.gaussian_model_loader import GaussianModelLoader
 from internal.utils.visualizers import Visualizers
-from utils.common import AsyncImageSaver
+from utils.common import AsyncImageSaver, AsyncNDArraySaver
 
 # params for efficiency measurement
 WARM_UP_ITERS = 100
 N_TIMES = 20  # number of times to repeat the rendering for averaging
-N_VAL_IMAGES = 100  # if valid cameras more than this, do not repeat
+N_VAL_IMAGES = 300  # if valid cameras more than this, do not repeat
 
 
 def parse_args():
@@ -28,6 +28,7 @@ def parse_args():
     parser.add_argument("--dataset_path", "-d", type=str, required=True)
     parser.add_argument("--output_dir", "-o", type=str, default="")
     parser.add_argument("--eval_efficiency", action="store_true")
+    parser.add_argument("--raw_depth", action="store_true")
 
     args = parser.parse_args()
     if not (len(args.output_dir) > 0):
@@ -50,17 +51,11 @@ def load_from_ckpt(args, device):
     return gaussian_model, renderer, dataparser_outputs, ckpt
 
 
-def get_image_saver(async_image_saver, output_dir: str):
-    for d in [
-        "render",
-        "gt",
-        "montage",
-        "depth_expected",
-        "depth_median",
-        "normal_world",
-        "normal_view",
-    ]:
+def get_image_saver(async_image_saver, ndarray_saver, output_dir: str):
+    for d in ["render", "gt", "montage", "depth_expected", "depth_median", "normal_world", "normal_view"]:
         os.makedirs(osp.join(output_dir, d), exist_ok=True)
+    if ndarray_saver is not None:
+        os.makedirs(osp.join(output_dir, "depth_raw"), exist_ok=True)
 
     def tensor2numpy(image: torch.Tensor):
         return (image * 255.0).to(torch.uint8).permute(1, 2, 0).cpu().numpy()
@@ -77,7 +72,7 @@ def get_image_saver(async_image_saver, output_dir: str):
 
         render = tensor2numpy(torch.clamp_max(outputs["render"], max=1.0))
         gt = tensor2numpy(batch[1][1])
-        montage = np.concatenate([render, gt], axis=1)
+        # montage = np.concatenate([render, gt], axis=1)
         depth_expected = tensor2numpy(depth2invdepth(outputs["expected_depth"]))
         depth_median = tensor2numpy(depth2invdepth(outputs["median_depth"]))
         normal_view = tensor2numpy((1.0 - outputs["normal"]) / 2.0)
@@ -86,14 +81,19 @@ def get_image_saver(async_image_saver, output_dir: str):
 
         async_image_saver.save(render, osp.join(output_dir, "render/{}.png".format(image_name)))
         async_image_saver.save(gt, osp.join(output_dir, "gt/{}.png".format(image_name)))
-        async_image_saver.save(montage, osp.join(output_dir, "montage/{}.png".format(image_name)))
+        # async_image_saver.save(montage, osp.join(output_dir, "montage/{}.png".format(image_name)))
         async_image_saver.save(
             depth_expected,
             osp.join(output_dir, "depth_expected/{}.png".format(image_name)),
         )
         async_image_saver.save(depth_median, osp.join(output_dir, "depth_median/{}.png".format(image_name)))
         async_image_saver.save(normal_view, osp.join(output_dir, "normal_view/{}.png".format(image_name)))
-        async_image_saver.save(normal_world, osp.join(output_dir, "normal_world/{}.png".format(image_name)))
+        # async_image_saver.save(normal_world, osp.join(output_dir, "normal_world/{}.png".format(image_name)))
+
+        if ndarray_saver is not None:
+            ndarray_saver.save(
+                outputs["median_depth"].squeeze().detach().cpu().numpy(), osp.join(output_dir, "depth_raw/{}.npy".format(image_name))
+            )
 
     return _image_saver
 
@@ -111,7 +111,7 @@ def main():
             dataparser_outputs.val_set,
             undistort_image=False,
             camera_device=device,
-            image_device=torch.device("cpu"),
+            image_device=device if args.eval_efficiency else torch.device("cpu"),
         ),
         max_cache_num=-1,
         shuffle=False,
@@ -120,7 +120,8 @@ def main():
 
     # Create image saver
     async_image_saver = AsyncImageSaver(is_rgb=True)
-    image_saver = get_image_saver(async_image_saver, osp.join(args.output_dir, "images"))
+    ndarray_saver = AsyncNDArraySaver() if args.raw_depth else None
+    image_saver = get_image_saver(async_image_saver, ndarray_saver, osp.join(args.output_dir, "images"))
 
     # Render
     # bg_color = torch.zeros((3,), dtype=torch.float32, device=device)
@@ -135,20 +136,17 @@ def main():
 
     # Shut down image saver to quit
     async_image_saver.stop()
+    if args.raw_depth:
+        ndarray_saver.stop()
 
     if args.eval_efficiency:
         # Warm up
         cnt = 0
+        bg_color = torch.tensor(ckpt["hyper_parameters"]["background_color"], dtype=torch.float32, device=device)
         with tqdm(total=WARM_UP_ITERS, desc="Warming up") as pbar:
             for batch in dataloader:
-                camera, (name, image, mask), extra = batch
-                image = image.to(device)
-                outputs = renderer(
-                    camera,
-                    gaussian_model,
-                    torch.zeros((3,)).to(image),
-                    render_types=["rgb"],
-                )
+                camera, (name, _, _), _ = batch
+                outputs = renderer(camera, gaussian_model, bg_color, render_types=["rgb", "depth"])
                 pbar.update(1)
                 cnt += 1
                 if cnt >= WARM_UP_ITERS:
@@ -166,7 +164,7 @@ def main():
 
                 torch.cuda.synchronize()
                 start_time = time.time()
-                outputs = renderer(camera, gaussian_model, bg_color, render_types=["rgb"])
+                outputs = renderer(camera, gaussian_model, bg_color, render_types=["rgb", "depth", "normal", "coord"])
                 torch.cuda.synchronize()
                 end_time = time.time()
 

@@ -11,8 +11,6 @@ data:
       split_mode: experiment
       eval_image_select_mode: list
       eval_list: data/MatrixCity/street/val_images.txt
-      depth_scale_lower_bound: 0.3
-      depth_scale_upper_bound: 3.0
 model:
   background_color: [1.0, 1.0, 1.0]
   renderer_output_types: [rgb, depth, normal]
@@ -35,10 +33,10 @@ model:
       lambda_dn: 0.1
       dn_from_iter: 0
       mesh_regularization_schedule:
-        start_iter: 40_000
-        reset_occupancy_stop_iter: 50_000
+        start_iter: 50_000
+        reset_occupancy_stop_iter: 55_000
       depth_loss_weight:
-        init: 0.0
+        init: 1.0
         final_factor: 0.1
   density:
     class_path: surf_recon.modeling.density_controllers.depth_guided_densifier.DepthGuidedDensityController
@@ -47,8 +45,8 @@ model:
       densify_from_iter: 1_000
       densify_until_iter: 30_000
       densification_interval: 1000
-      densify_grad_threshold: 3e-5
+      densify_grad_threshold: 7.5e-5
       guided_densify_ratio: 0.0
-      opacity_reset_interval: 60_000
-      trim_from_iter: 1000
-      trim_interval: 1000
+      opacity_reset_interval: 10_000
+      cull_opacity_threshold: 0.05
+      percent_dense: 2e-3
