@@ -4,7 +4,6 @@
   <img src="assets/demo.gif" width="640" />
 </p>
 
-We provide a codebase for reproduction in [SculptGS](https://anonymous.4open.science/r/SculptGS).
 
 ## 1. Installation
 
