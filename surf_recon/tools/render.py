@@ -111,7 +111,7 @@ def main():
             dataparser_outputs.val_set,
             undistort_image=False,
             camera_device=device,
-            image_device=device if args.eval_efficiency else torch.device("cpu"),
+            image_device=torch.device("cpu"),
         ),
         max_cache_num=-1,
         shuffle=False,
@@ -126,13 +126,13 @@ def main():
     # Render
     # bg_color = torch.zeros((3,), dtype=torch.float32, device=device)
     bg_color = torch.tensor(ckpt["hyper_parameters"]["background_color"], dtype=torch.float32, device=device)
-    for batch in tqdm(dataloader, desc="Rendering and evaluating"):
-        camera, (name, image, mask), extra = batch
-        image = image.to(device)
+    # for batch in tqdm(dataloader, desc="Rendering and evaluating"):
+    #     camera, (name, image, mask), extra = batch
+    #     image = image.to(device)
 
-        outputs = renderer(camera, gaussian_model, bg_color, render_types=["rgb", "depth", "normal"])
+    #     outputs = renderer(camera, gaussian_model, bg_color, render_types=["rgb", "depth", "normal"])
 
-        image_saver(batch, outputs)
+    #     image_saver(batch, outputs)
 
     # Shut down image saver to quit
     async_image_saver.stop()
@@ -146,7 +146,7 @@ def main():
         with tqdm(total=WARM_UP_ITERS, desc="Warming up") as pbar:
             for batch in dataloader:
                 camera, (name, _, _), _ = batch
-                outputs = renderer(camera, gaussian_model, bg_color, render_types=["rgb", "depth"])
+                outputs = renderer(camera, gaussian_model, bg_color, render_types=["rgb"])
                 pbar.update(1)
                 cnt += 1
                 if cnt >= WARM_UP_ITERS:
@@ -160,11 +160,11 @@ def main():
         for idx in range(n_times):
             for batch in tqdm(dataloader, desc="Measuring efficiency"):
                 camera, (name, image, mask), extra = batch
-                image = image.to(device)
+                # image = image.to(device)
 
                 torch.cuda.synchronize()
                 start_time = time.time()
-                outputs = renderer(camera, gaussian_model, bg_color, render_types=["rgb", "depth", "normal", "coord"])
+                outputs = renderer(camera, gaussian_model, bg_color, render_types=["rgb"])
                 torch.cuda.synchronize()
                 end_time = time.time()
 
