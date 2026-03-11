@@ -1,6 +1,6 @@
 # Supplemental Materials for Submission #5995
 
-<video src="assets/demo.mp4" autoplay loop muted playsinline></video>
+![demo](assets/demo.gif)
 
 We provide a codebase for reproduction in [SculptGS](https://anonymous.4open.science/r/SculptGS).
 
