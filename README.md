@@ -1,6 +1,8 @@
 # Supplemental Materials for Submission #5995
 
-![demo](assets/demo.gif)
+<p align="center">
+  <img src="assets/demo.gif" width="640" />
+</p>
 
 We provide a codebase for reproduction in [SculptGS](https://anonymous.4open.science/r/SculptGS).
 
